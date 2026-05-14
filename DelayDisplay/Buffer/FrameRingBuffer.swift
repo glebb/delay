@@ -14,34 +14,41 @@ actor FrameRingBuffer {
     }
 
     private let maximumEntryCount: Int
-    private var entries: [Entry] = []
+    private var entries: [Entry?]
+    private var headIndex = 0
+    private var entryCount = 0
 
     init(maximumDelayMilliseconds: Int = 10_000, assumedFramesPerSecond: Int32 = 60) {
         let frameBudget = Int((Double(maximumDelayMilliseconds) / 1_000.0) * Double(assumedFramesPerSecond))
         self.maximumEntryCount = max(frameBudget, 1)
+        self.entries = Array(repeating: nil, count: self.maximumEntryCount)
     }
 
     func append(_ image: CGImage, sourceTime: TimeInterval) -> Int {
         let storedSourceTime: TimeInterval
-        if let latestSourceTime = entries.last?.sourceTime,
+        if let latestSourceTime = latestEntry?.sourceTime,
            sourceTime <= latestSourceTime {
             storedSourceTime = latestSourceTime + 0.000_001
         } else {
             storedSourceTime = sourceTime
         }
 
-        entries.append(Entry(sourceTime: storedSourceTime, image: image))
+        let entry = Entry(sourceTime: storedSourceTime, image: image)
 
-        if entries.count > maximumEntryCount {
-            entries.removeFirst(entries.count - maximumEntryCount)
+        if entryCount < maximumEntryCount {
+            entries[physicalIndex(forLogicalIndex: entryCount)] = entry
+            entryCount += 1
+        } else {
+            entries[headIndex] = entry
+            headIndex = physicalIndex(forLogicalIndex: 1)
         }
 
-        return entries.count
+        return entryCount
     }
 
     func entry(forTargetSourceTime targetSourceTime: TimeInterval) -> LookupResult {
-        guard let oldestEntry = entries.first,
-              let latestEntry = entries.last else {
+        guard let oldestEntry = firstEntry,
+              let latestEntry else {
             return .warmingUp
         }
 
@@ -53,16 +60,34 @@ actor FrameRingBuffer {
             return .underrun
         }
 
-        guard let entry = entries.last(where: { $0.sourceTime <= targetSourceTime }) else {
+        var lowerBound = 0
+        var upperBound = entryCount - 1
+        var matchingEntry: Entry?
+
+        while lowerBound <= upperBound {
+            let middleIndex = (lowerBound + upperBound) / 2
+            guard let candidateEntry = entry(atLogicalIndex: middleIndex) else {
+                break
+            }
+
+            if candidateEntry.sourceTime <= targetSourceTime {
+                matchingEntry = candidateEntry
+                lowerBound = middleIndex + 1
+            } else {
+                upperBound = middleIndex - 1
+            }
+        }
+
+        guard let matchingEntry else {
             return .warmingUp
         }
 
-        return .ready(entry)
+        return .ready(matchingEntry)
     }
 
     func bufferedDurationMilliseconds() -> Int {
-        guard let oldestSourceTime = entries.first?.sourceTime,
-              let latestSourceTime = entries.last?.sourceTime else {
+        guard let oldestSourceTime = firstEntry?.sourceTime,
+              let latestSourceTime = latestEntry?.sourceTime else {
             return 0
         }
 
@@ -70,10 +95,33 @@ actor FrameRingBuffer {
     }
 
     func bufferedFrameCount() -> Int {
-        entries.count
+        entryCount
     }
 
     func clear() {
-        entries.removeAll(keepingCapacity: true)
+        entries = Array(repeating: nil, count: maximumEntryCount)
+        headIndex = 0
+        entryCount = 0
+    }
+
+    private var firstEntry: Entry? {
+        entry(atLogicalIndex: 0)
+    }
+
+    private var latestEntry: Entry? {
+        entry(atLogicalIndex: entryCount - 1)
+    }
+
+    private func entry(atLogicalIndex logicalIndex: Int) -> Entry? {
+        guard logicalIndex >= 0,
+              logicalIndex < entryCount else {
+            return nil
+        }
+
+        return entries[physicalIndex(forLogicalIndex: logicalIndex)]
+    }
+
+    private func physicalIndex(forLogicalIndex logicalIndex: Int) -> Int {
+        (headIndex + logicalIndex) % maximumEntryCount
     }
 }
