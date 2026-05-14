@@ -6,16 +6,13 @@ final class OverlayHotkeyMonitor {
     private var localMonitor: Any?
     private var eventTap: CFMachPort?
     private var eventTapRunLoopSource: CFRunLoopSource?
-    private let escapeHandler: () -> Void
     private let keyActivityHandler: () -> Void
     private let shouldHandleKeyActivity: () -> Bool
 
     init(
-        onEscape: @escaping () -> Void,
         onKeyActivity: @escaping () -> Void,
         shouldHandleKeyActivity: @escaping () -> Bool
     ) {
-        self.escapeHandler = onEscape
         self.keyActivityHandler = onKeyActivity
         self.shouldHandleKeyActivity = shouldHandleKeyActivity
     }
@@ -28,11 +25,6 @@ final class OverlayHotkeyMonitor {
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else {
                 return event
-            }
-
-            if event.keyCode == 53 {
-                self.escapeHandler()
-                return nil
             }
 
             if self.shouldHandleKeyActivity() {
@@ -122,11 +114,6 @@ final class OverlayHotkeyMonitor {
     }
 
     private func handleExternalKeyDown(keyCode: Int64) {
-        if keyCode == 53 {
-            escapeHandler()
-            return
-        }
-
         if shouldHandleKeyActivity() {
             keyActivityHandler()
         }

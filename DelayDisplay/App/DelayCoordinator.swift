@@ -21,9 +21,6 @@ final class DelayCoordinator: ObservableObject {
     private let screenCaptureService: ScreenCaptureService
     private let overlayWindowController: OverlayWindowController
     private lazy var overlayHotkeyMonitor = OverlayHotkeyMonitor(
-        onEscape: { [weak self] in
-            self?.stop()
-        },
         onKeyActivity: { [weak self] in
             self?.handleObservedKeyPress()
         },
