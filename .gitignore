@@ -1,0 +1,16 @@
+.DS_Store
+
+# Generated Xcode project
+DelayDisplay.xcodeproj/
+
+# Build products
+build/
+DerivedData/
+
+# Xcode user-specific state
+*.xcuserdatad/
+*.xcuserstate
+
+# Swift Package Manager local state
+.swiftpm/
+**/xcshareddata/swiftpm/configuration/
