@@ -1,6 +1,7 @@
 @preconcurrency import CoreGraphics
 import CoreImage
 import CoreMedia
+import CoreVideo
 import Foundation
 import QuartzCore
 import ScreenCaptureKit
@@ -53,7 +54,6 @@ final class CaptureFramePreparer {
             return .skipped
         }
 
-        let hostTime = CACurrentMediaTime()
         let ciImage = CIImage(cvImageBuffer: imageBuffer)
         let visibleRect = visibleImageRect(for: ciImage.extent, attachments: attachments)
 
@@ -65,7 +65,7 @@ final class CaptureFramePreparer {
             PreparedFrame(
                 image: cgImage,
                 sourceTime: sourceTime(for: sampleBuffer),
-                hostTime: hostTime,
+                hostTime: hostTime(for: attachments),
                 imageDescription: "\(cgImage.width)x\(cgImage.height)"
             )
         )
@@ -138,6 +138,20 @@ final class CaptureFramePreparer {
 
         let seconds = presentationTimeStamp.seconds
         return seconds.isFinite ? seconds : nil
+    }
+
+    private func hostTime(for attachments: [SCStreamFrameInfo: Any]?) -> TimeInterval {
+        guard let hostTimeValue = attachments?[.displayTime] as? UInt64,
+              hostTimeValue > 0 else {
+            return CACurrentMediaTime()
+        }
+
+        let hostClockFrequency = CVGetHostClockFrequency()
+        guard hostClockFrequency > 0 else {
+            return CACurrentMediaTime()
+        }
+
+        return Double(hostTimeValue) / hostClockFrequency
     }
 }
 
