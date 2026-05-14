@@ -1,4 +1,5 @@
 import AppKit
+import CoreVideo
 import Foundation
 import QuartzCore
 
@@ -128,7 +129,10 @@ final class DelayCoordinator: ObservableObject {
             isRunning = true
             lastPresentedDelayMilliseconds = effectiveDelayMilliseconds
             lastPresentedStatusLine = initialStatusLine
-            startPresentationTicker(framesPerSecond: settingsStore.captureQualityPreset.presentationFramesPerSecond)
+            startPresentationTicker(
+                displayID: screen.displayID,
+                framesPerSecond: settingsStore.captureQualityPreset.presentationFramesPerSecond
+            )
             overlayHotkeyMonitor.start()
             statusLine = initialStatusLine
         } catch {
@@ -366,19 +370,19 @@ final class DelayCoordinator: ObservableObject {
         statusLine = runtimeStatus
     }
 
-    private func startPresentationTicker(framesPerSecond: Int) {
-        presentationTicker.start(framesPerSecond: framesPerSecond) { [weak self] in
+    private func startPresentationTicker(displayID: CGDirectDisplayID?, framesPerSecond: Int) {
+        presentationTicker.start(displayID: displayID, fallbackFramesPerSecond: framesPerSecond) { [weak self] hostTime in
             guard let self else {
                 return
             }
 
-            await self.presentCurrentFrame()
+            await self.presentCurrentFrame(hostTime: hostTime)
         }
     }
 
-    private func presentCurrentFrame() async {
+    private func presentCurrentFrame(hostTime: TimeInterval) async {
         guard isRunning,
-              let presentation = await screenCaptureService.presentation(atHostTime: CACurrentMediaTime()) else {
+              let presentation = await screenCaptureService.presentation(atHostTime: hostTime) else {
             return
         }
 
@@ -465,11 +469,34 @@ enum DelayCoordinatorError: LocalizedError {
 }
 
 private final class PresentationTicker {
+    private let callbackQueue = DispatchQueue(label: "DelayDisplay.PresentationTicker")
     private let clock = ContinuousClock()
     private var task: Task<Void, Never>?
+    private var displayLink: CVDisplayLink?
+    private var pendingHostTime: TimeInterval?
+    private var isTickInFlight = false
+    private var tick: (@Sendable (TimeInterval) async -> Void)?
 
-    func start(framesPerSecond: Int = 60, tick: @escaping @Sendable () async -> Void) {
+    func start(
+        displayID: CGDirectDisplayID?,
+        fallbackFramesPerSecond: Int = 60,
+        tick: @escaping @Sendable (TimeInterval) async -> Void
+    ) {
         stop()
+        self.tick = tick
+
+        if let displayID,
+           startDisplayLink(displayID: displayID) {
+            return
+        }
+
+        startFallbackTicker(framesPerSecond: fallbackFramesPerSecond)
+    }
+
+    private func startFallbackTicker(framesPerSecond: Int) {
+        guard let tick else {
+            return
+        }
 
         let normalizedFramesPerSecond = max(framesPerSecond, 1)
         let intervalNanoseconds = max(Int64(1_000_000_000 / normalizedFramesPerSecond), 1)
@@ -480,7 +507,7 @@ private final class PresentationTicker {
             var nextTick = clock.now
 
             while !Task.isCancelled {
-                await tick()
+                await tick(CACurrentMediaTime())
                 nextTick += interval
 
                 do {
@@ -493,11 +520,99 @@ private final class PresentationTicker {
     }
 
     func stop() {
+        if let displayLink {
+            CVDisplayLinkStop(displayLink)
+        }
+
+        displayLink = nil
         task?.cancel()
         task = nil
+        callbackQueue.sync {
+            pendingHostTime = nil
+            isTickInFlight = false
+        }
+        tick = nil
     }
 
     deinit {
-        task?.cancel()
+        stop()
+    }
+
+    private func startDisplayLink(displayID: CGDirectDisplayID) -> Bool {
+        var displayLink: CVDisplayLink?
+        guard CVDisplayLinkCreateWithCGDisplay(displayID, &displayLink) == kCVReturnSuccess,
+              let displayLink else {
+            return false
+        }
+
+        guard CVDisplayLinkSetOutputHandler(displayLink, { [weak self] _, _, outputTime, _, _ in
+            self?.handleDisplayLinkTick(hostTime: outputTime.pointee.hostTime)
+            return kCVReturnSuccess
+        }) == kCVReturnSuccess else {
+            return false
+        }
+
+        guard CVDisplayLinkStart(displayLink) == kCVReturnSuccess else {
+            return false
+        }
+
+        self.displayLink = displayLink
+        return true
+    }
+
+    private func handleDisplayLinkTick(hostTime: UInt64) {
+        let hostTimeSeconds = seconds(forHostTime: hostTime)
+
+        callbackQueue.async { [weak self] in
+            guard let self else {
+                return
+            }
+
+            if self.isTickInFlight {
+                self.pendingHostTime = hostTimeSeconds
+                return
+            }
+
+            self.scheduleTick(hostTime: hostTimeSeconds)
+        }
+    }
+
+    private func scheduleTick(hostTime: TimeInterval) {
+        guard let tick else {
+            return
+        }
+
+        isTickInFlight = true
+
+        Task { [weak self] in
+            await tick(hostTime)
+            self?.finishTick()
+        }
+    }
+
+    private func finishTick() {
+        callbackQueue.async { [weak self] in
+            guard let self else {
+                return
+            }
+
+            if let pendingHostTime {
+                self.pendingHostTime = nil
+                self.scheduleTick(hostTime: pendingHostTime)
+                return
+            }
+
+            self.isTickInFlight = false
+        }
+    }
+
+    private func seconds(forHostTime hostTime: UInt64) -> TimeInterval {
+        let frequency = CVGetHostClockFrequency()
+        guard hostTime > 0,
+              frequency > 0 else {
+            return CACurrentMediaTime()
+        }
+
+        return Double(hostTime) / frequency
     }
 }

@@ -225,7 +225,15 @@ actor CapturePipeline {
             )
         }
 
-        let targetSourceTime = estimatedSourceNow - (Double(delayMilliseconds) / 1_000.0)
+        let unclampedTargetSourceTime = estimatedSourceNow - (Double(delayMilliseconds) / 1_000.0)
+        let targetSourceTime: TimeInterval
+        if delayMilliseconds <= 0,
+           let latestSourceTime {
+            targetSourceTime = min(unclampedTargetSourceTime, latestSourceTime)
+        } else {
+            targetSourceTime = unclampedTargetSourceTime
+        }
+
         let lookupResult = await frameBuffer.entry(forTargetSourceTime: targetSourceTime)
 
         var imageToDisplay = lastPresentedImage

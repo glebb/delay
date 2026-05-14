@@ -389,13 +389,17 @@ private final class ScreenStreamOutputHandler: NSObject, SCStreamOutput {
 }
 
 extension NSScreen {
+    var displayID: CGDirectDisplayID? {
+        guard let screenNumber = deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+            return nil
+        }
+
+        return CGDirectDisplayID(screenNumber.uint32Value)
+    }
+
     static func screen(withDisplayID displayID: CGDirectDisplayID) -> NSScreen? {
         screens.first { screen in
-            guard let screenNumber = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
-                return false
-            }
-
-            return CGDirectDisplayID(screenNumber.uint32Value) == displayID
+            screen.displayID == displayID
         }
     }
 }
