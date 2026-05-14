@@ -109,6 +109,24 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle("Temporarily switch to live mode while typing", isOn: $settingsStore.liveModeOnKeyPressEnabled)
+
+                Text("When enabled, key presses in the focused app temporarily force 0 ms delay. DelayDisplay returns to the configured delay after \(settingsStore.liveModeGracePeriodSeconds) \(liveModeGracePeriodUnit) without new key presses. Detecting typing in other apps requires Accessibility access, and some macOS system shortcuts may still not be detected.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Stepper(
+                    value: Binding(
+                        get: { settingsStore.liveModeGracePeriodSeconds },
+                        set: { settingsStore.setLiveModeGracePeriodSeconds($0) }
+                    ),
+                    in: SettingsStore.minimumLiveModeGracePeriodSeconds...SettingsStore.maximumLiveModeGracePeriodSeconds
+                ) {
+                    Text("Live mode grace period: \(settingsStore.liveModeGracePeriodSeconds) \(liveModeGracePeriodUnit)")
+                }
+            }
+
             VStack(alignment: .leading, spacing: 8) {
                 Text("Runtime")
                     .font(.headline)
@@ -158,5 +176,9 @@ struct SettingsView: View {
         let parsedDelay = Int(draftDelay) ?? settingsStore.delayMilliseconds
         settingsStore.setDelay(parsedDelay)
         draftDelay = String(settingsStore.delayMilliseconds)
+    }
+
+    private var liveModeGracePeriodUnit: String {
+        settingsStore.liveModeGracePeriodSeconds == 1 ? "second" : "seconds"
     }
 }

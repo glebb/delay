@@ -64,6 +64,20 @@ final class AppModel: ObservableObject {
                 coordinator?.applyUpdatedPresentationSettings()
             }
             .store(in: &cancellables)
+
+        settingsStore.$liveModeOnKeyPressEnabled
+            .dropFirst()
+            .sink { [weak coordinator] _ in
+                coordinator?.applyUpdatedKeyboardActivitySetting()
+            }
+            .store(in: &cancellables)
+
+        settingsStore.$liveModeGracePeriodSeconds
+            .dropFirst()
+            .sink { [weak coordinator] _ in
+                coordinator?.applyUpdatedLiveModeGracePeriod()
+            }
+            .store(in: &cancellables)
     }
 
     func showSettingsWindow() {

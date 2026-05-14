@@ -3,6 +3,8 @@ import Foundation
 
 @MainActor
 final class DelayCoordinator: ObservableObject {
+    private static let liveModeAccessibilityMessage = "Temporary live mode in other apps requires Accessibility access in System Settings > Privacy & Security > Accessibility."
+
     @Published private(set) var isRunning = false
     @Published private(set) var isBusy = false
     @Published private(set) var statusLine = "Idle"
@@ -15,9 +17,23 @@ final class DelayCoordinator: ObservableObject {
     private let permissionsService: PermissionsService
     private let screenCaptureService: ScreenCaptureService
     private let overlayWindowController: OverlayWindowController
-    private lazy var overlayHotkeyMonitor = OverlayHotkeyMonitor { [weak self] in
-        self?.stop()
-    }
+    private lazy var overlayHotkeyMonitor = OverlayHotkeyMonitor(
+        onEscape: { [weak self] in
+            self?.stop()
+        },
+        onKeyActivity: { [weak self] in
+            self?.handleObservedKeyPress()
+        },
+        shouldHandleKeyActivity: { [weak self] in
+            guard let self else {
+                return false
+            }
+
+            return self.isRunning && self.settingsStore.liveModeOnKeyPressEnabled
+        }
+    )
+    private var liveModeResetTask: Task<Void, Never>?
+    private var isTemporaryLiveModeActive = false
 
     init(
         settingsStore: SettingsStore,
@@ -34,14 +50,21 @@ final class DelayCoordinator: ObservableObject {
         }
     }
 
+    deinit {
+        liveModeResetTask?.cancel()
+    }
+
     func start() async {
         guard !isRunning, !isBusy else { return }
+
+        resetTemporaryLiveModeState()
 
         isBusy = true
         lastErrorMessage = nil
         statusLine = permissionsService.hasScreenRecordingPermission()
             ? "Preparing capture source"
             : "Requesting screen recording permission"
+        refreshKeyboardActivityPermission(prompt: true)
 
         defer {
             isBusy = false
@@ -67,9 +90,7 @@ final class DelayCoordinator: ObservableObject {
                 throw DelayCoordinatorError.noMatchingScreen
             }
 
-            let initialStatusLine = settingsStore.captureMode == .frontmostWindowFullscreen
-                ? "Warming up selected window at \(settingsStore.delayMilliseconds) ms"
-                : "Warming up \(settingsStore.delayMilliseconds) ms buffer"
+            let initialStatusLine = currentStatusLine(isWarmingUp: true)
 
             let presentationMode: PresentationMode = settingsStore.captureMode == .frontmostWindowFullscreen
                 ? .fullscreenWindow
@@ -80,7 +101,7 @@ final class DelayCoordinator: ObservableObject {
 
             overlayWindowController.showOverlay(
                 on: screen,
-                delayMilliseconds: settingsStore.delayMilliseconds,
+                delayMilliseconds: effectiveDelayMilliseconds,
                 statusLine: initialStatusLine,
                 presentationMode: presentationMode,
                 showsDebugHUD: settingsStore.showsDebugHUD,
@@ -91,20 +112,19 @@ final class DelayCoordinator: ObservableObject {
 
             try await screenCaptureService.startCapture(
                 bootstrap: bootstrap,
-                delayMilliseconds: settingsStore.delayMilliseconds,
+                delayMilliseconds: effectiveDelayMilliseconds,
                 excludingBundleIdentifier: Bundle.main.bundleIdentifier,
                 overlayWindowID: overlayWindowController.overlayWindowID
             ) { [weak self] image, isWarmingUp, debugInfo in
                 guard let self else { return }
 
                 await MainActor.run {
-                    let runtimeStatus = isWarmingUp
-                        ? "Warming up \(self.settingsStore.delayMilliseconds) ms buffer"
-                        : "Running at \(self.settingsStore.delayMilliseconds) ms"
+                    let runtimeStatus = self.currentStatusLine(isWarmingUp: isWarmingUp)
+                    let effectiveDelay = self.effectiveDelayMilliseconds
 
                     self.statusLine = runtimeStatus
                     self.overlayWindowController.update(
-                        delayMilliseconds: self.settingsStore.delayMilliseconds,
+                        delayMilliseconds: effectiveDelay,
                         statusLine: runtimeStatus
                     )
                     self.overlayWindowController.display(frame: image, isWarmingUp: isWarmingUp, debugInfo: debugInfo)
@@ -115,6 +135,7 @@ final class DelayCoordinator: ObservableObject {
             isRunning = true
             statusLine = initialStatusLine
         } catch {
+            resetTemporaryLiveModeState()
             overlayWindowController.hideOverlay()
             NSApp.setActivationPolicy(.accessory)
             statusLine = "Unable to prepare capture"
@@ -125,6 +146,7 @@ final class DelayCoordinator: ObservableObject {
     func stop() {
         guard isRunning else { return }
 
+        resetTemporaryLiveModeState()
         overlayHotkeyMonitor.stop()
         overlayWindowController.hideOverlay()
         screenCaptureService.stopCapture()
@@ -148,13 +170,7 @@ final class DelayCoordinator: ObservableObject {
     func applyUpdatedDelay() {
         guard isRunning else { return }
 
-        screenCaptureService.updateDelay(settingsStore.delayMilliseconds)
-
-        overlayWindowController.update(
-            delayMilliseconds: settingsStore.delayMilliseconds,
-            statusLine: "Running at \(settingsStore.delayMilliseconds) ms"
-        )
-        statusLine = "Running at \(settingsStore.delayMilliseconds) ms"
+        applyEffectiveDelay(isWarmingUp: false)
     }
 
     func applyUpdatedPresentationSettings() {
@@ -164,6 +180,32 @@ final class DelayCoordinator: ObservableObject {
             showsDebugHUD: settingsStore.showsDebugHUD,
             keepsOverlayOnTop: settingsStore.keepsOverlayOnTop
         )
+    }
+
+    func applyUpdatedKeyboardActivitySetting() {
+        if settingsStore.liveModeOnKeyPressEnabled {
+            refreshKeyboardActivityPermission(prompt: true)
+            if isRunning {
+                overlayHotkeyMonitor.refresh()
+            }
+            return
+        }
+
+        clearKeyboardActivityPermissionMessageIfNeeded()
+
+        guard isRunning else { return }
+
+        if !settingsStore.liveModeOnKeyPressEnabled {
+            deactivateTemporaryLiveModeIfNeeded()
+        }
+    }
+
+    func applyUpdatedLiveModeGracePeriod() {
+        guard isRunning, isTemporaryLiveModeActive else {
+            return
+        }
+
+        scheduleTemporaryLiveModeReset()
     }
 
     func refreshAvailableWindows(requestPermission: Bool = false) async {
@@ -207,6 +249,112 @@ final class DelayCoordinator: ObservableObject {
             availableWindows = []
             windowSelectionMessage = error.localizedDescription
         }
+    }
+
+    private var effectiveDelayMilliseconds: Int {
+        isTemporaryLiveModeActive ? SettingsStore.minimumDelay : settingsStore.delayMilliseconds
+    }
+
+    private func handleObservedKeyPress() {
+        guard isRunning, settingsStore.liveModeOnKeyPressEnabled else {
+            return
+        }
+
+        isTemporaryLiveModeActive = true
+        scheduleTemporaryLiveModeReset()
+        applyEffectiveDelay(isWarmingUp: false)
+    }
+
+    private func scheduleTemporaryLiveModeReset() {
+        liveModeResetTask?.cancel()
+        liveModeResetTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: liveModeTimeoutNanoseconds)
+            } catch {
+                return
+            }
+
+            await MainActor.run {
+                self?.deactivateTemporaryLiveModeIfNeeded()
+            }
+        }
+    }
+
+    private func deactivateTemporaryLiveModeIfNeeded() {
+        liveModeResetTask?.cancel()
+        liveModeResetTask = nil
+
+        guard isTemporaryLiveModeActive else {
+            return
+        }
+
+        isTemporaryLiveModeActive = false
+        applyEffectiveDelay(isWarmingUp: false)
+    }
+
+    private func resetTemporaryLiveModeState() {
+        liveModeResetTask?.cancel()
+        liveModeResetTask = nil
+        isTemporaryLiveModeActive = false
+    }
+
+    private func applyEffectiveDelay(isWarmingUp: Bool) {
+        let runtimeStatus = currentStatusLine(isWarmingUp: isWarmingUp)
+        let effectiveDelay = effectiveDelayMilliseconds
+
+        screenCaptureService.updateDelay(effectiveDelay)
+        overlayWindowController.update(
+            delayMilliseconds: effectiveDelay,
+            statusLine: runtimeStatus
+        )
+        statusLine = runtimeStatus
+    }
+
+    private func currentStatusLine(isWarmingUp: Bool) -> String {
+        if isTemporaryLiveModeActive {
+            let baseDelay = settingsStore.delayMilliseconds
+            if isWarmingUp {
+                return "Warming up live mode at 0 ms (returns to \(baseDelay) ms)"
+            }
+
+            return "Live mode at 0 ms (returns to \(baseDelay) ms)"
+        }
+
+        let delayMilliseconds = settingsStore.delayMilliseconds
+        switch settingsStore.captureMode {
+        case .displayPreview:
+            return isWarmingUp
+                ? "Warming up \(delayMilliseconds) ms buffer"
+                : "Running at \(delayMilliseconds) ms"
+        case .frontmostWindowFullscreen:
+            return isWarmingUp
+                ? "Warming up selected window at \(delayMilliseconds) ms"
+                : "Running selected window at \(delayMilliseconds) ms"
+        }
+    }
+
+    private func refreshKeyboardActivityPermission(prompt: Bool) {
+        guard settingsStore.liveModeOnKeyPressEnabled else {
+            clearKeyboardActivityPermissionMessageIfNeeded()
+            return
+        }
+
+        let isGranted = permissionsService.requestAccessibilityPermissionIfNeeded(prompt: prompt)
+        if isGranted {
+            clearKeyboardActivityPermissionMessageIfNeeded()
+        } else {
+            lastErrorMessage = Self.liveModeAccessibilityMessage
+        }
+    }
+
+    private func clearKeyboardActivityPermissionMessageIfNeeded() {
+        if lastErrorMessage == Self.liveModeAccessibilityMessage {
+            lastErrorMessage = nil
+        }
+    }
+
+    private var liveModeTimeoutNanoseconds: UInt64 {
+        UInt64(settingsStore.liveModeGracePeriodSeconds) * 1_000_000_000
     }
 }
 

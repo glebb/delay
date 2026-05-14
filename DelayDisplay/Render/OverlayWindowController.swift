@@ -66,7 +66,7 @@ final class OverlayWindowController: NSWindowController, NSWindowDelegate {
             )
             window.setFrame(frame, display: true)
             window.ignoresMouseEvents = false
-            window.title = "DelayDisplay Preview"
+            window.title = windowTitle(delayMilliseconds: delayMilliseconds, statusLine: statusLine, presentationMode: presentationMode)
             window.titleVisibility = .visible
             window.minSize = NSSize(width: 480, height: 270)
             window.hasShadow = true
@@ -81,7 +81,7 @@ final class OverlayWindowController: NSWindowController, NSWindowDelegate {
             )
             window.setFrame(frame, display: true)
             window.ignoresMouseEvents = false
-            window.title = "DelayDisplay Output"
+            window.title = windowTitle(delayMilliseconds: delayMilliseconds, statusLine: statusLine, presentationMode: presentationMode)
             window.titleVisibility = .visible
             window.hasShadow = true
             window.minSize = NSSize(width: 640, height: 360)
@@ -107,6 +107,11 @@ final class OverlayWindowController: NSWindowController, NSWindowDelegate {
 
     func update(delayMilliseconds: Int, statusLine: String) {
         contentModel.update(delayMilliseconds: delayMilliseconds, statusLine: statusLine)
+        window?.title = windowTitle(
+            delayMilliseconds: delayMilliseconds,
+            statusLine: statusLine,
+            presentationMode: currentPresentationMode
+        )
     }
 
     func updatePresentation(showsDebugHUD: Bool, keepsOverlayOnTop: Bool) {
@@ -164,6 +169,26 @@ final class OverlayWindowController: NSWindowController, NSWindowDelegate {
     private func applyPresentationBehavior(to window: NSWindow) {
         window.level = windowLevel(for: currentPresentationMode)
         window.collectionBehavior = collectionBehavior(for: currentPresentationMode)
+    }
+
+    private func windowTitle(
+        delayMilliseconds: Int,
+        statusLine: String,
+        presentationMode: PresentationMode
+    ) -> String {
+        let baseTitle: String
+        switch presentationMode {
+        case .previewWindow:
+            baseTitle = "DelayDisplay Preview"
+        case .fullscreenWindow:
+            baseTitle = "DelayDisplay Output"
+        }
+
+        let modeTitle = statusLine.localizedCaseInsensitiveContains("live mode")
+            ? "Live"
+            : "\(delayMilliseconds) ms"
+
+        return "\(baseTitle) - \(modeTitle)"
     }
 
     private func windowLevel(for presentationMode: PresentationMode) -> NSWindow.Level {

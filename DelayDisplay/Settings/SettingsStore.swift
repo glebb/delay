@@ -29,6 +29,8 @@ enum CaptureMode: String, CaseIterable, Identifiable {
 final class SettingsStore: ObservableObject {
     static let minimumDelay = 0
     static let maximumDelay = 10_000
+    static let minimumLiveModeGracePeriodSeconds = 1
+    static let maximumLiveModeGracePeriodSeconds = 30
 
     @Published var delayMilliseconds: Int {
         didSet {
@@ -70,12 +72,32 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    @Published var liveModeOnKeyPressEnabled: Bool {
+        didSet {
+            userDefaults.set(liveModeOnKeyPressEnabled, forKey: Self.liveModeOnKeyPressEnabledKey)
+        }
+    }
+
+    @Published var liveModeGracePeriodSeconds: Int {
+        didSet {
+            let clamped = Self.clampLiveModeGracePeriod(liveModeGracePeriodSeconds)
+            if clamped != liveModeGracePeriodSeconds {
+                liveModeGracePeriodSeconds = clamped
+                return
+            }
+
+            userDefaults.set(clamped, forKey: Self.liveModeGracePeriodSecondsKey)
+        }
+    }
+
     private let userDefaults: UserDefaults
     private static let delayKey = "delayMilliseconds"
     private static let captureModeKey = "captureMode"
     private static let selectedWindowIDKey = "selectedWindowID"
     private static let showsDebugHUDKey = "showsDebugHUD"
     private static let keepsOverlayOnTopKey = "keepsOverlayOnTop"
+    private static let liveModeOnKeyPressEnabledKey = "liveModeOnKeyPressEnabled"
+    private static let liveModeGracePeriodSecondsKey = "liveModeGracePeriodSeconds"
 
     init(userDefaults: UserDefaults = .standard) {
         self.userDefaults = userDefaults
@@ -94,6 +116,13 @@ final class SettingsStore: ObservableObject {
         } else {
             self.keepsOverlayOnTop = userDefaults.bool(forKey: Self.keepsOverlayOnTopKey)
         }
+        if userDefaults.object(forKey: Self.liveModeOnKeyPressEnabledKey) == nil {
+            self.liveModeOnKeyPressEnabled = false
+        } else {
+            self.liveModeOnKeyPressEnabled = userDefaults.bool(forKey: Self.liveModeOnKeyPressEnabledKey)
+        }
+        let storedLiveModeGracePeriod = userDefaults.object(forKey: Self.liveModeGracePeriodSecondsKey) as? Int ?? 4
+        self.liveModeGracePeriodSeconds = Self.clampLiveModeGracePeriod(storedLiveModeGracePeriod)
     }
 
     func setDelay(_ value: Int) {
@@ -104,7 +133,15 @@ final class SettingsStore: ObservableObject {
         selectedWindowID = value
     }
 
+    func setLiveModeGracePeriodSeconds(_ value: Int) {
+        liveModeGracePeriodSeconds = Self.clampLiveModeGracePeriod(value)
+    }
+
     private static func clamp(_ value: Int) -> Int {
         min(max(value, minimumDelay), maximumDelay)
+    }
+
+    private static func clampLiveModeGracePeriod(_ value: Int) -> Int {
+        min(max(value, minimumLiveModeGracePeriodSeconds), maximumLiveModeGracePeriodSeconds)
     }
 }

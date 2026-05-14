@@ -10,6 +10,7 @@ DelayDisplay is a native macOS app with a Dock icon and companion menu bar contr
 - Refreshable window picker for choosing the app window used by fullscreen capture
 - Optional debug HUD toggle for the delayed output window
 - Optional always-on-top toggle for keeping the delayed window above normal app windows in the current Space
+- Optional temporary live-mode toggle that forces 0 ms delay while keys are pressed in another app, then restores the configured delay after a user-configurable inactivity grace period once Accessibility access is granted
 - Direct `CGImage` rendering in the output window to avoid per-frame `NSImage` conversion overhead
 - Debug HUD instrumentation for buffered span and effective emitted delay
 - Capture tuned for smoother playback with a 60 fps target plus capped capture resolution to limit pixel workload
@@ -20,6 +21,7 @@ DelayDisplay is a native macOS app with a Dock icon and companion menu bar contr
 - Movable preview window for full-display mode and fullscreen presentation for selected-window mode
 - Optional always-on-top window level for both presentation modes within the active Space
 - Emergency Escape shortcut and preview-window close button both stop delayed output
+- Optional global key activity monitoring for temporary live mode while another app has focus, which requires Accessibility access and still may not detect some macOS system shortcuts
 
 ## Project structure
 
