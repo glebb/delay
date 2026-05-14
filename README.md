@@ -1,14 +1,14 @@
 # DelayDisplay
 
-DelayDisplay is a native macOS app with a Dock icon and companion menu bar control that captures either a selected display or a specific window, buffers frames in memory, and presents them with delay. The current implementation supports a movable display preview mode, an optional always-on-top presentation setting, and a fullscreen selected-window mode for single-monitor use.
+DelayDisplay is a native macOS app with a Dock icon and companion menu bar control that captures either a selected monitor or a specific window, buffers frames in memory, and presents them with delay. The current implementation supports a delayed monitor window, a delayed selected-window output, and an optional always-on-top presentation setting.
 
 ## Current status
 
 - Menu bar app shell with start, stop, settings, and quit actions
 - Delay setting stored in `UserDefaults` and constrained to `0...10000` milliseconds
-- Capture mode setting for display preview or fullscreen selected-window capture
-- Monitor picker for display preview mode, persisted in `UserDefaults`
-- Refreshable window picker for choosing the app window used by fullscreen capture
+- Capture mode setting for monitor or selected-window capture
+- Monitor picker for monitor capture, persisted in `UserDefaults`
+- Refreshable window picker for choosing the app window used by selected-window capture
 - Optional debug HUD toggle for the delayed output window
 - Optional always-on-top toggle for keeping the delayed window above normal app windows in the current Space
 - Optional temporary live-mode toggle that forces 0 ms delay while keys are pressed in another app, then restores the configured delay after a user-configurable inactivity grace period once Accessibility access is granted
@@ -19,7 +19,7 @@ DelayDisplay is a native macOS app with a Dock icon and companion menu bar contr
 - ScreenCaptureKit bootstrap that resolves the selected display for preview mode and excludes the app's own process from capture
 - ScreenCaptureKit stream output converted into delayed image updates
 - In-memory frame buffer keyed by presentation timestamps
-- Movable preview window for full-display mode and fullscreen presentation for selected-window mode
+- Movable delayed window for monitor capture and delayed output window for selected-window capture
 - Optional always-on-top window level for both presentation modes within the active Space
 - Preview windows open on the selected monitor in that monitor's active Space; native macOS fullscreen Spaces remain isolated
 - Emergency Escape shortcut and preview-window close button both stop delayed output

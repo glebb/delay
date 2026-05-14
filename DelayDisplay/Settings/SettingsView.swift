@@ -51,7 +51,7 @@ struct SettingsView: View {
             Text("DelayDisplay")
                 .font(.title2.weight(.semibold))
 
-            Text("Configure the delayed source and presentation mode. The settings window now scrolls and spreads controls horizontally so it still fits shorter laptop screens.")
+            Text("Choose what DelayDisplay captures, set the delay amount, and control how the delayed window behaves.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -60,7 +60,7 @@ struct SettingsView: View {
     private var captureSection: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 12) {
-                Picker("Capture mode", selection: $settingsStore.captureMode) {
+                Picker("Source", selection: $settingsStore.captureMode) {
                     ForEach(CaptureMode.allCases) { mode in
                         Text(mode.title).tag(mode)
                     }
@@ -223,7 +223,7 @@ struct SettingsView: View {
             }
 
             if let selectedDisplay = selectedDisplay {
-                Text("Selected: \(selectedDisplay.displayName) • \(selectedDisplay.detail). Preview opens in that monitor's active Space.")
+                Text("Selected: \(selectedDisplay.displayName) • \(selectedDisplay.detail). The delayed window opens in that monitor's active Space.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else if let displaySelectionMessage = coordinator.displaySelectionMessage {
@@ -261,7 +261,7 @@ struct SettingsView: View {
             }
 
             if let selectedWindow = selectedWindow {
-                Text("Selected: \(selectedWindow.displayName) • \(selectedWindow.detail)")
+                Text("Selected: \(selectedWindow.displayName) • \(selectedWindow.detail). DelayDisplay shows this source in a separate delayed window.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else if let windowSelectionMessage = coordinator.windowSelectionMessage {

@@ -179,7 +179,7 @@ final class OverlayWindowController: NSWindowController, NSWindowDelegate {
         let baseTitle: String
         switch presentationMode {
         case .previewWindow:
-            baseTitle = "DelayDisplay Preview"
+            baseTitle = "DelayDisplay Monitor"
         case .fullscreenWindow:
             baseTitle = "DelayDisplay Output"
         }

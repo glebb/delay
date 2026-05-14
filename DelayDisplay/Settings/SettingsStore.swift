@@ -9,18 +9,18 @@ enum CaptureMode: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .displayPreview:
-            return "Display preview"
+            return "Monitor"
         case .frontmostWindowFullscreen:
-            return "Selected window fullscreen"
+            return "Selected Window"
         }
     }
 
     var summary: String {
         switch self {
         case .displayPreview:
-            return "Reliable on one monitor; shows a movable delayed preview window."
+            return "Capture one monitor and show it in a delayed output window."
         case .frontmostWindowFullscreen:
-            return "Captures a selected app window and replays it fullscreen with delay."
+            return "Capture a selected app window and show it in a delayed output window."
         }
     }
 }
