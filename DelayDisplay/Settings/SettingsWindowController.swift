@@ -34,6 +34,8 @@ final class SettingsWindowController: NSWindowController {
         window.title = "DelayDisplay Settings"
         window.titleVisibility = .visible
         window.isReleasedWhenClosed = false
+        window.level = .floating
+        window.collectionBehavior = [.moveToActiveSpace]
         window.setFrameAutosaveName("DelayDisplaySettingsWindow")
         window.center()
 
