@@ -15,6 +15,8 @@ private final class OverlayWindow: NSWindow {
 final class OverlayWindowController: NSWindowController, NSWindowDelegate {
     private let contentModel = OverlayContentModel()
     private var hostingController: NSHostingController<DelayedFrameView>?
+    private var currentPresentationMode: PresentationMode = .previewWindow
+    private var keepsOverlayOnTop = false
     private let initialDebugInfo = CaptureDebugInfo(
         receivedFrames: 0,
         acceptedFrames: 0,
@@ -40,11 +42,13 @@ final class OverlayWindowController: NSWindowController, NSWindowDelegate {
         delayMilliseconds: Int,
         statusLine: String,
         presentationMode: PresentationMode,
-        showsDebugHUD: Bool
+        showsDebugHUD: Bool,
+        keepsOverlayOnTop: Bool
     ) {
         contentModel.update(delayMilliseconds: delayMilliseconds, statusLine: statusLine)
-        contentModel.updatePresentation(showsDebugHUD: showsDebugHUD)
+        updatePresentation(showsDebugHUD: showsDebugHUD, keepsOverlayOnTop: keepsOverlayOnTop)
         contentModel.updateFrame(nil, isWarmingUp: true, debugInfo: initialDebugInfo)
+        currentPresentationMode = presentationMode
 
         let rootView = DelayedFrameView(model: contentModel)
         let hostingController = NSHostingController(rootView: rootView)
@@ -61,8 +65,6 @@ final class OverlayWindowController: NSWindowController, NSWindowDelegate {
                 screen: screen
             )
             window.setFrame(frame, display: true)
-            window.level = .floating
-            window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
             window.ignoresMouseEvents = false
             window.title = "DelayDisplay Preview"
             window.titleVisibility = .visible
@@ -78,8 +80,6 @@ final class OverlayWindowController: NSWindowController, NSWindowDelegate {
                 screen: screen
             )
             window.setFrame(frame, display: true)
-            window.level = .normal
-            window.collectionBehavior = [.moveToActiveSpace]
             window.ignoresMouseEvents = false
             window.title = "DelayDisplay Output"
             window.titleVisibility = .visible
@@ -94,6 +94,7 @@ final class OverlayWindowController: NSWindowController, NSWindowDelegate {
         window.isOpaque = true
         window.delegate = self
         window.isReleasedWhenClosed = false
+        applyPresentationBehavior(to: window)
 
         self.window = window
         self.hostingController = hostingController
@@ -108,8 +109,15 @@ final class OverlayWindowController: NSWindowController, NSWindowDelegate {
         contentModel.update(delayMilliseconds: delayMilliseconds, statusLine: statusLine)
     }
 
-    func updatePresentation(showsDebugHUD: Bool) {
+    func updatePresentation(showsDebugHUD: Bool, keepsOverlayOnTop: Bool) {
         contentModel.updatePresentation(showsDebugHUD: showsDebugHUD)
+        self.keepsOverlayOnTop = keepsOverlayOnTop
+
+        guard let window else {
+            return
+        }
+
+        applyPresentationBehavior(to: window)
     }
 
     func display(frame: CGImage?, isWarmingUp: Bool, debugInfo: CaptureDebugInfo) {
@@ -151,5 +159,28 @@ final class OverlayWindowController: NSWindowController, NSWindowDelegate {
         )
 
         return CGRect(origin: origin, size: CGSize(width: width, height: height)).integral
+    }
+
+    private func applyPresentationBehavior(to window: NSWindow) {
+        window.level = windowLevel(for: currentPresentationMode)
+        window.collectionBehavior = collectionBehavior(for: currentPresentationMode)
+    }
+
+    private func windowLevel(for presentationMode: PresentationMode) -> NSWindow.Level {
+        switch presentationMode {
+        case .previewWindow:
+            return keepsOverlayOnTop ? .floating : .normal
+        case .fullscreenWindow:
+            return keepsOverlayOnTop ? .floating : .normal
+        }
+    }
+
+    private func collectionBehavior(for presentationMode: PresentationMode) -> NSWindow.CollectionBehavior {
+        switch presentationMode {
+        case .previewWindow:
+            return [.moveToActiveSpace]
+        case .fullscreenWindow:
+            return [.moveToActiveSpace]
+        }
     }
 }

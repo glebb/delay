@@ -83,7 +83,8 @@ final class DelayCoordinator: ObservableObject {
                 delayMilliseconds: settingsStore.delayMilliseconds,
                 statusLine: initialStatusLine,
                 presentationMode: presentationMode,
-                showsDebugHUD: settingsStore.showsDebugHUD
+                showsDebugHUD: settingsStore.showsDebugHUD,
+                keepsOverlayOnTop: settingsStore.keepsOverlayOnTop
             )
 
             statusLine = "Starting capture stream"
@@ -159,7 +160,10 @@ final class DelayCoordinator: ObservableObject {
     func applyUpdatedPresentationSettings() {
         guard isRunning else { return }
 
-        overlayWindowController.updatePresentation(showsDebugHUD: settingsStore.showsDebugHUD)
+        overlayWindowController.updatePresentation(
+            showsDebugHUD: settingsStore.showsDebugHUD,
+            keepsOverlayOnTop: settingsStore.keepsOverlayOnTop
+        )
     }
 
     func refreshAvailableWindows(requestPermission: Bool = false) async {

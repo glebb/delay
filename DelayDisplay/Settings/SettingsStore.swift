@@ -64,11 +64,18 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    @Published var keepsOverlayOnTop: Bool {
+        didSet {
+            userDefaults.set(keepsOverlayOnTop, forKey: Self.keepsOverlayOnTopKey)
+        }
+    }
+
     private let userDefaults: UserDefaults
     private static let delayKey = "delayMilliseconds"
     private static let captureModeKey = "captureMode"
     private static let selectedWindowIDKey = "selectedWindowID"
     private static let showsDebugHUDKey = "showsDebugHUD"
+    private static let keepsOverlayOnTopKey = "keepsOverlayOnTop"
 
     init(userDefaults: UserDefaults = .standard) {
         self.userDefaults = userDefaults
@@ -81,6 +88,11 @@ final class SettingsStore: ObservableObject {
             self.showsDebugHUD = true
         } else {
             self.showsDebugHUD = userDefaults.bool(forKey: Self.showsDebugHUDKey)
+        }
+        if userDefaults.object(forKey: Self.keepsOverlayOnTopKey) == nil {
+            self.keepsOverlayOnTop = false
+        } else {
+            self.keepsOverlayOnTop = userDefaults.bool(forKey: Self.keepsOverlayOnTopKey)
         }
     }
 

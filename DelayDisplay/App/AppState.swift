@@ -57,6 +57,13 @@ final class AppModel: ObservableObject {
                 coordinator?.applyUpdatedPresentationSettings()
             }
             .store(in: &cancellables)
+
+        settingsStore.$keepsOverlayOnTop
+            .dropFirst()
+            .sink { [weak coordinator] _ in
+                coordinator?.applyUpdatedPresentationSettings()
+            }
+            .store(in: &cancellables)
     }
 
     func showSettingsWindow() {

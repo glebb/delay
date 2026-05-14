@@ -101,6 +101,14 @@ struct SettingsView: View {
 
             Toggle("Show debug HUD", isOn: $settingsStore.showsDebugHUD)
 
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle("Keep delay window above other apps", isOn: $settingsStore.keepsOverlayOnTop)
+
+                Text("Applies in the current Space only. Native macOS fullscreen Spaces are not pinned above other apps.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             VStack(alignment: .leading, spacing: 8) {
                 Text("Runtime")
                     .font(.headline)
