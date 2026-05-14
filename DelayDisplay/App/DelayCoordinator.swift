@@ -407,7 +407,7 @@ final class DelayCoordinator: ObservableObject {
         }
 
         overlayWindowController.display(
-            frame: presentation.image,
+            frame: presentation.frame,
             isWarmingUp: presentation.isWarmingUp,
             debugInfo: presentation.debugInfo
         )

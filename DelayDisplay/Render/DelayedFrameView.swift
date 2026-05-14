@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Combine
 import SwiftUI
 
@@ -107,16 +108,16 @@ private struct DelayedFrameSurface: NSViewRepresentable {
         }
 
         private func subscribe(to model: OverlayContentModel) {
-            frameSubscription = model.framePublisher.sink { [weak surfaceView] image in
-                surfaceView?.update(image: image)
+            frameSubscription = model.framePublisher.sink { [weak surfaceView] frame in
+                surfaceView?.update(frame: frame)
             }
         }
     }
 }
 
 private final class DelayedFrameSurfaceView: NSView {
-    private let imageLayer = CALayer()
-    private var displayedImage: CGImage?
+    private let displayLayer = AVSampleBufferDisplayLayer()
+    private var displayedFrame: DelayedFramePayload?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -125,9 +126,10 @@ private final class DelayedFrameSurfaceView: NSView {
         layer?.backgroundColor = NSColor.black.cgColor
         layerContentsRedrawPolicy = .never
 
-        imageLayer.contentsGravity = .resizeAspect
-        imageLayer.backgroundColor = NSColor.black.cgColor
-        layer?.addSublayer(imageLayer)
+        displayLayer.videoGravity = .resizeAspect
+        displayLayer.backgroundColor = NSColor.black.cgColor
+        displayLayer.controlTimebase = nil
+        layer?.addSublayer(displayLayer)
     }
 
     @available(*, unavailable)
@@ -137,27 +139,29 @@ private final class DelayedFrameSurfaceView: NSView {
 
     override func layout() {
         super.layout()
-        imageLayer.frame = bounds
-        updateContentsScale()
+        displayLayer.frame = bounds
     }
 
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        updateContentsScale()
-    }
-
-    func update(image: CGImage?) {
-        guard displayedImage !== image else {
+    func update(frame: DelayedFramePayload?) {
+        guard displayedFrame !== frame else {
             return
         }
 
-        displayedImage = image
-        imageLayer.contents = image
-    }
+        displayedFrame = frame
 
-    private func updateContentsScale() {
-        let contentsScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
-        layer?.contentsScale = contentsScale
-        imageLayer.contentsScale = contentsScale
+        guard let frame else {
+            displayLayer.flushAndRemoveImage()
+            return
+        }
+
+        if displayLayer.status == .failed {
+            displayLayer.flush()
+        }
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        displayLayer.contentsRect = frame.contentsRect
+        CATransaction.commit()
+        displayLayer.enqueue(frame.sampleBuffer)
     }
 }

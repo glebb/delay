@@ -133,7 +133,7 @@ final class OverlayWindowController: NSWindowController, NSWindowDelegate {
         applyPresentationBehavior(to: window)
     }
 
-    func display(frame: CGImage?, isWarmingUp: Bool, debugInfo: CaptureDebugInfo) {
+    func display(frame: DelayedFramePayload?, isWarmingUp: Bool, debugInfo: CaptureDebugInfo) {
         contentModel.updateFrame(frame, isWarmingUp: isWarmingUp, debugInfo: debugInfo)
     }
 

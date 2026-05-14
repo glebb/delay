@@ -5,7 +5,7 @@ import Foundation
 
 @MainActor
 final class OverlayContentModel: ObservableObject {
-    let framePublisher = PassthroughSubject<CGImage?, Never>()
+    let framePublisher = PassthroughSubject<DelayedFramePayload?, Never>()
 
     @Published private(set) var hasImage = false
     @Published private(set) var delayMilliseconds = 0
@@ -44,7 +44,7 @@ final class OverlayContentModel: ObservableObject {
         }
     }
 
-    func updateFrame(_ frame: CGImage?, isWarmingUp: Bool, debugInfo: CaptureDebugInfo) {
+    func updateFrame(_ frame: DelayedFramePayload?, isWarmingUp: Bool, debugInfo: CaptureDebugInfo) {
         let shouldShowPlaceholder = frame == nil && !hasImage
         if self.isWarmingUp != shouldShowPlaceholder && (shouldShowPlaceholder || !isWarmingUp) {
             self.isWarmingUp = shouldShowPlaceholder

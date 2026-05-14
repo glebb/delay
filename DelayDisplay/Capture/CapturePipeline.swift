@@ -1,5 +1,4 @@
 @preconcurrency import CoreGraphics
-import CoreImage
 import CoreMedia
 import CoreVideo
 import Foundation
@@ -22,9 +21,21 @@ struct CaptureDebugInfo: Sendable {
 }
 
 struct CapturePresentation: Sendable {
-    let image: CGImage?
+    let frame: DelayedFramePayload?
     let isWarmingUp: Bool
     let debugInfo: CaptureDebugInfo
+}
+
+final class DelayedFramePayload: @unchecked Sendable {
+    let sampleBuffer: CMSampleBuffer
+    let contentsRect: CGRect
+    let imageDescription: String
+
+    init(sampleBuffer: CMSampleBuffer, contentsRect: CGRect, imageDescription: String) {
+        self.sampleBuffer = sampleBuffer
+        self.contentsRect = contentsRect
+        self.imageDescription = imageDescription
+    }
 }
 
 enum PreparedFrameResult {
@@ -33,15 +44,12 @@ enum PreparedFrameResult {
 }
 
 struct PreparedFrame {
-    let image: CGImage
+    let frame: DelayedFramePayload
     let sourceTime: TimeInterval
     let hostTime: TimeInterval
-    let imageDescription: String
 }
 
 final class CaptureFramePreparer {
-    private let imageContext = CIContext()
-
     func prepare(sampleBuffer: CMSampleBuffer) -> PreparedFrameResult {
         guard sampleBuffer.isValid,
               let imageBuffer = sampleBuffer.imageBuffer else {
@@ -54,19 +62,28 @@ final class CaptureFramePreparer {
             return .skipped
         }
 
-        let ciImage = CIImage(cvImageBuffer: imageBuffer)
-        let visibleRect = visibleImageRect(for: ciImage.extent, attachments: attachments)
-
-        guard let cgImage = imageContext.createCGImage(ciImage, from: visibleRect) else {
+        let extent = CGRect(
+            x: 0,
+            y: 0,
+            width: CVPixelBufferGetWidth(imageBuffer),
+            height: CVPixelBufferGetHeight(imageBuffer)
+        )
+        let visibleRect = visibleImageRect(for: extent, attachments: attachments)
+        let contentsRect = normalizedContentsRect(for: visibleRect, in: extent)
+        let sourceTime = sourceTime(for: sampleBuffer, attachments: attachments)
+        guard let displaySampleBuffer = makeDisplaySampleBuffer(from: sampleBuffer, sourceTime: sourceTime) else {
             return .skipped
         }
 
         return .accepted(
             PreparedFrame(
-                image: cgImage,
-                sourceTime: sourceTime(for: sampleBuffer, attachments: attachments),
-                hostTime: hostTime(for: attachments),
-                imageDescription: "\(cgImage.width)x\(cgImage.height)"
+                frame: DelayedFramePayload(
+                    sampleBuffer: displaySampleBuffer,
+                    contentsRect: contentsRect,
+                    imageDescription: "\(Int(visibleRect.width.rounded()))x\(Int(visibleRect.height.rounded()))"
+                ),
+                sourceTime: sourceTime,
+                hostTime: hostTime(for: attachments)
             )
         )
     }
@@ -127,6 +144,25 @@ final class CaptureFramePreparer {
         return croppedRect.isNull || croppedRect.isEmpty ? extent : croppedRect
     }
 
+    private func normalizedContentsRect(for visibleRect: CGRect, in extent: CGRect) -> CGRect {
+        guard extent.width > 0,
+              extent.height > 0 else {
+            return CGRect(x: 0, y: 0, width: 1, height: 1)
+        }
+
+        let normalizedX = visibleRect.minX / extent.width
+        let normalizedY = visibleRect.minY / extent.height
+        let normalizedWidth = visibleRect.width / extent.width
+        let normalizedHeight = visibleRect.height / extent.height
+
+        return CGRect(
+            x: normalizedX,
+            y: normalizedY,
+            width: normalizedWidth,
+            height: normalizedHeight
+        )
+    }
+
     private func sourceTime(
         for sampleBuffer: CMSampleBuffer,
         attachments: [SCStreamFrameInfo: Any]?
@@ -161,6 +197,167 @@ final class CaptureFramePreparer {
 
         return Double(hostTimeValue) / hostClockFrequency
     }
+
+    private func makeDisplaySampleBuffer(
+        from sampleBuffer: CMSampleBuffer,
+        sourceTime: TimeInterval
+    ) -> CMSampleBuffer? {
+        guard let sourceImageBuffer = sampleBuffer.imageBuffer,
+              let copiedPixelBuffer = makeIndependentPixelBuffer(from: sourceImageBuffer) else {
+            return nil
+        }
+
+        let presentationTimeStamp = CMTime(seconds: sourceTime, preferredTimescale: 600)
+        let timingInfo = CMSampleTimingInfo(
+            duration: frameDuration(for: sampleBuffer),
+            presentationTimeStamp: presentationTimeStamp,
+            decodeTimeStamp: .invalid
+        )
+
+        var formatDescription: CMVideoFormatDescription?
+        let formatStatus = CMVideoFormatDescriptionCreateForImageBuffer(
+            allocator: kCFAllocatorDefault,
+            imageBuffer: copiedPixelBuffer,
+            formatDescriptionOut: &formatDescription
+        )
+
+        guard formatStatus == noErr,
+              let formatDescription else {
+            return nil
+        }
+
+        var copiedSampleBuffer: CMSampleBuffer?
+        var sampleTimingInfo = timingInfo
+        let status = CMSampleBufferCreateReadyWithImageBuffer(
+            allocator: kCFAllocatorDefault,
+            imageBuffer: copiedPixelBuffer,
+            formatDescription: formatDescription,
+            sampleTiming: &sampleTimingInfo,
+            sampleBufferOut: &copiedSampleBuffer
+        )
+
+        guard status == noErr,
+              let copiedSampleBuffer else {
+            return nil
+        }
+
+        markDisplayImmediately(copiedSampleBuffer)
+        return copiedSampleBuffer
+    }
+
+    private func makeIndependentPixelBuffer(from imageBuffer: CVImageBuffer) -> CVPixelBuffer? {
+        let sourcePixelBuffer = imageBuffer as CVPixelBuffer
+        let width = CVPixelBufferGetWidth(sourcePixelBuffer)
+        let height = CVPixelBufferGetHeight(sourcePixelBuffer)
+        let pixelFormat = CVPixelBufferGetPixelFormatType(sourcePixelBuffer)
+        let attributes: [CFString: Any] = [
+            kCVPixelBufferIOSurfacePropertiesKey: [:],
+            kCVPixelBufferCGImageCompatibilityKey: true,
+            kCVPixelBufferCGBitmapContextCompatibilityKey: true
+        ]
+
+        var destinationPixelBuffer: CVPixelBuffer?
+        let status = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            width,
+            height,
+            pixelFormat,
+            attributes as CFDictionary,
+            &destinationPixelBuffer
+        )
+
+        guard status == kCVReturnSuccess,
+              let destinationPixelBuffer else {
+            return nil
+        }
+
+        CVBufferPropagateAttachments(sourcePixelBuffer, destinationPixelBuffer)
+        CVPixelBufferLockBaseAddress(sourcePixelBuffer, .readOnly)
+        CVPixelBufferLockBaseAddress(destinationPixelBuffer, [])
+        defer {
+            CVPixelBufferUnlockBaseAddress(destinationPixelBuffer, [])
+            CVPixelBufferUnlockBaseAddress(sourcePixelBuffer, .readOnly)
+        }
+
+        let planeCount = CVPixelBufferGetPlaneCount(sourcePixelBuffer)
+        if planeCount == 0 {
+            guard let sourceBaseAddress = CVPixelBufferGetBaseAddress(sourcePixelBuffer),
+                  let destinationBaseAddress = CVPixelBufferGetBaseAddress(destinationPixelBuffer) else {
+                return nil
+            }
+
+            let bytesPerRow = min(
+                CVPixelBufferGetBytesPerRow(sourcePixelBuffer),
+                CVPixelBufferGetBytesPerRow(destinationPixelBuffer)
+            )
+            let rowCount = min(
+                CVPixelBufferGetHeight(sourcePixelBuffer),
+                CVPixelBufferGetHeight(destinationPixelBuffer)
+            )
+
+            for rowIndex in 0..<rowCount {
+                let sourceRow = sourceBaseAddress.advanced(by: rowIndex * CVPixelBufferGetBytesPerRow(sourcePixelBuffer))
+                let destinationRow = destinationBaseAddress.advanced(by: rowIndex * CVPixelBufferGetBytesPerRow(destinationPixelBuffer))
+                memcpy(destinationRow, sourceRow, bytesPerRow)
+            }
+
+            return destinationPixelBuffer
+        }
+
+        for planeIndex in 0..<planeCount {
+            guard let sourcePlaneBaseAddress = CVPixelBufferGetBaseAddressOfPlane(sourcePixelBuffer, planeIndex),
+                  let destinationPlaneBaseAddress = CVPixelBufferGetBaseAddressOfPlane(destinationPixelBuffer, planeIndex) else {
+                return nil
+            }
+
+            let bytesPerRow = min(
+                CVPixelBufferGetBytesPerRowOfPlane(sourcePixelBuffer, planeIndex),
+                CVPixelBufferGetBytesPerRowOfPlane(destinationPixelBuffer, planeIndex)
+            )
+            let rowCount = min(
+                CVPixelBufferGetHeightOfPlane(sourcePixelBuffer, planeIndex),
+                CVPixelBufferGetHeightOfPlane(destinationPixelBuffer, planeIndex)
+            )
+
+            for rowIndex in 0..<rowCount {
+                let sourceRow = sourcePlaneBaseAddress.advanced(by: rowIndex * CVPixelBufferGetBytesPerRowOfPlane(sourcePixelBuffer, planeIndex))
+                let destinationRow = destinationPlaneBaseAddress.advanced(by: rowIndex * CVPixelBufferGetBytesPerRowOfPlane(destinationPixelBuffer, planeIndex))
+                memcpy(destinationRow, sourceRow, bytesPerRow)
+            }
+        }
+
+        return destinationPixelBuffer
+    }
+
+    private func frameDuration(for sampleBuffer: CMSampleBuffer) -> CMTime {
+        let duration = CMSampleBufferGetDuration(sampleBuffer)
+        guard duration.isValid,
+              !duration.isIndefinite,
+              !duration.isPositiveInfinity,
+              !duration.isNegativeInfinity,
+              duration.seconds > 0 else {
+            return .invalid
+        }
+
+        return duration
+    }
+
+    private func markDisplayImmediately(_ sampleBuffer: CMSampleBuffer) {
+        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true),
+              CFArrayGetCount(attachments) > 0 else {
+            return
+        }
+
+        let attachmentDictionary = unsafeBitCast(
+            CFArrayGetValueAtIndex(attachments, 0),
+            to: CFMutableDictionary.self
+        )
+        CFDictionarySetValue(
+            attachmentDictionary,
+            Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(),
+            Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
+        )
+    }
 }
 
 actor CapturePipeline {
@@ -176,7 +373,7 @@ actor CapturePipeline {
     private var latestHostTime: TimeInterval?
     private var latestImageDescription = "n/a"
     private var lastPresentedSourceTime: TimeInterval?
-    private var lastPresentedImage: CGImage?
+    private var lastPresentedFrame: DelayedFramePayload?
     private var isUnderrunning = false
     private var recentAcceptedHostTimes: [TimeInterval] = []
     private var recentPresentedHostTimes: [TimeInterval] = []
@@ -206,7 +403,7 @@ actor CapturePipeline {
         latestHostTime = nil
         latestImageDescription = "n/a"
         lastPresentedSourceTime = nil
-        lastPresentedImage = nil
+        lastPresentedFrame = nil
         isUnderrunning = false
         recentAcceptedHostTimes.removeAll(keepingCapacity: false)
         recentPresentedHostTimes.removeAll(keepingCapacity: false)
@@ -224,9 +421,9 @@ actor CapturePipeline {
         let sourceTime = preparedFrame.sourceTime
         latestSourceTime = sourceTime
         latestHostTime = preparedFrame.hostTime
-        latestImageDescription = preparedFrame.imageDescription
+        latestImageDescription = preparedFrame.frame.imageDescription
         recordEvent(preparedFrame.hostTime, in: &recentAcceptedHostTimes)
-        _ = await frameBuffer.append(preparedFrame.image, sourceTime: sourceTime)
+        _ = await frameBuffer.append(preparedFrame.frame, sourceTime: sourceTime)
     }
 
     func presentation(atHostTime hostTime: TimeInterval) async -> CapturePresentation {
@@ -236,7 +433,7 @@ actor CapturePipeline {
 
         guard let estimatedSourceNow else {
             return CapturePresentation(
-                image: lastPresentedImage,
+                frame: lastPresentedFrame,
                 isWarmingUp: true,
                 debugInfo: makeDebugInfo(
                     bufferedFrames: bufferedFrames,
@@ -258,7 +455,7 @@ actor CapturePipeline {
 
         let lookupResult = await frameBuffer.entry(forTargetSourceTime: targetSourceTime)
 
-        var imageToDisplay = lastPresentedImage
+        var frameToDisplay = lastPresentedFrame
         var isWarmingUp = false
 
         switch lookupResult {
@@ -266,17 +463,17 @@ actor CapturePipeline {
             isWarmingUp = true
             isUnderrunning = false
         case .ready(let entry):
-            imageToDisplay = entry.image
+            frameToDisplay = entry.frame
             isUnderrunning = false
 
             if entry.sourceTime != lastPresentedSourceTime {
                 emittedFrames += 1
                 lastPresentedSourceTime = entry.sourceTime
-                lastPresentedImage = entry.image
+                lastPresentedFrame = entry.frame
                 recordEvent(hostTime, in: &recentPresentedHostTimes)
             }
         case .underrun:
-            if !isUnderrunning && lastPresentedImage != nil {
+            if !isUnderrunning && lastPresentedFrame != nil {
                 underrunCount += 1
             }
 
@@ -289,7 +486,7 @@ actor CapturePipeline {
         }
 
         return CapturePresentation(
-            image: imageToDisplay,
+            frame: frameToDisplay,
             isWarmingUp: isWarmingUp,
             debugInfo: makeDebugInfo(
                 bufferedFrames: bufferedFrames,

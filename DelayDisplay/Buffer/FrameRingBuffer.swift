@@ -4,7 +4,7 @@ import Foundation
 actor FrameRingBuffer {
     struct Entry {
         let sourceTime: TimeInterval
-        let image: CGImage
+        let frame: DelayedFramePayload
     }
 
     enum LookupResult {
@@ -24,7 +24,7 @@ actor FrameRingBuffer {
         self.entries = Array(repeating: nil, count: self.maximumEntryCount)
     }
 
-    func append(_ image: CGImage, sourceTime: TimeInterval) -> Int {
+    func append(_ frame: DelayedFramePayload, sourceTime: TimeInterval) -> Int {
         let storedSourceTime: TimeInterval
         if let latestSourceTime = latestEntry?.sourceTime,
            sourceTime <= latestSourceTime {
@@ -33,7 +33,7 @@ actor FrameRingBuffer {
             storedSourceTime = sourceTime
         }
 
-        let entry = Entry(sourceTime: storedSourceTime, image: image)
+        let entry = Entry(sourceTime: storedSourceTime, frame: frame)
 
         if entryCount < maximumEntryCount {
             entries[physicalIndex(forLogicalIndex: entryCount)] = entry
@@ -81,18 +81,6 @@ actor FrameRingBuffer {
         guard let previousIndex = matchingIndex,
               let previousEntry = entry(atLogicalIndex: previousIndex) else {
             return .warmingUp
-        }
-
-        let nextIndex = previousIndex + 1
-        guard let nextEntry = entry(atLogicalIndex: nextIndex) else {
-            return .ready(previousEntry)
-        }
-
-        let previousDelta = targetSourceTime - previousEntry.sourceTime
-        let nextDelta = nextEntry.sourceTime - targetSourceTime
-
-        if nextDelta < previousDelta {
-            return .ready(nextEntry)
         }
 
         return .ready(previousEntry)
