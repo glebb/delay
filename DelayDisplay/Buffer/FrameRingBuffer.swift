@@ -62,7 +62,7 @@ actor FrameRingBuffer {
 
         var lowerBound = 0
         var upperBound = entryCount - 1
-        var matchingEntry: Entry?
+        var matchingIndex: Int?
 
         while lowerBound <= upperBound {
             let middleIndex = (lowerBound + upperBound) / 2
@@ -71,18 +71,31 @@ actor FrameRingBuffer {
             }
 
             if candidateEntry.sourceTime <= targetSourceTime {
-                matchingEntry = candidateEntry
+                matchingIndex = middleIndex
                 lowerBound = middleIndex + 1
             } else {
                 upperBound = middleIndex - 1
             }
         }
 
-        guard let matchingEntry else {
+        guard let previousIndex = matchingIndex,
+              let previousEntry = entry(atLogicalIndex: previousIndex) else {
             return .warmingUp
         }
 
-        return .ready(matchingEntry)
+        let nextIndex = previousIndex + 1
+        guard let nextEntry = entry(atLogicalIndex: nextIndex) else {
+            return .ready(previousEntry)
+        }
+
+        let previousDelta = targetSourceTime - previousEntry.sourceTime
+        let nextDelta = nextEntry.sourceTime - targetSourceTime
+
+        if nextDelta < previousDelta {
+            return .ready(nextEntry)
+        }
+
+        return .ready(previousEntry)
     }
 
     func bufferedDurationMilliseconds() -> Int {

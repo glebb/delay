@@ -371,21 +371,25 @@ final class DelayCoordinator: ObservableObject {
     }
 
     private func startPresentationTicker(displayID: CGDirectDisplayID?, framesPerSecond: Int) {
-        presentationTicker.start(displayID: displayID, fallbackFramesPerSecond: framesPerSecond) { [weak self] hostTime in
-            guard let self else {
+        let screenCaptureService = self.screenCaptureService
+
+        presentationTicker.start(displayID: displayID, fallbackFramesPerSecond: framesPerSecond) { [weak self, screenCaptureService] hostTime in
+            guard let self,
+                  let presentation = await screenCaptureService.presentation(atHostTime: hostTime) else {
                 return
             }
 
-            await self.presentCurrentFrame(hostTime: hostTime)
+            await MainActor.run {
+                guard self.isRunning else {
+                    return
+                }
+
+                self.presentCurrentFrame(presentation)
+            }
         }
     }
 
-    private func presentCurrentFrame(hostTime: TimeInterval) async {
-        guard isRunning,
-              let presentation = await screenCaptureService.presentation(atHostTime: hostTime) else {
-            return
-        }
-
+    private func presentCurrentFrame(_ presentation: CapturePresentation) {
         let runtimeStatus = currentStatusLine(isWarmingUp: presentation.isWarmingUp)
         let effectiveDelay = effectiveDelayMilliseconds
 

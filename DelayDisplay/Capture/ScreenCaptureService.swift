@@ -80,6 +80,7 @@ final class ScreenCaptureService {
     private var stream: SCStream?
     private var outputHandler: ScreenStreamOutputHandler?
     private var capturePipeline: CapturePipeline?
+    private let presentationSource = CapturePresentationSource()
     private let sampleHandlerQueue = DispatchQueue(label: "DelayDisplay.ScreenCapture.Video")
 
     func availableDisplays() async throws -> [CapturedDisplayOption] {
@@ -211,6 +212,7 @@ final class ScreenCaptureService {
 
         try stream.addStreamOutput(outputHandler, type: .screen, sampleHandlerQueue: sampleHandlerQueue)
         try await stream.startCapture()
+        await presentationSource.setCapturePipeline(capturePipeline)
 
         activeBootstrap = bootstrap
         self.capturePipeline = capturePipeline
@@ -218,12 +220,8 @@ final class ScreenCaptureService {
         self.stream = stream
     }
 
-    func presentation(atHostTime hostTime: TimeInterval) async -> CapturePresentation? {
-        guard let capturePipeline else {
-            return nil
-        }
-
-        return await capturePipeline.presentation(atHostTime: hostTime)
+    nonisolated func presentation(atHostTime hostTime: TimeInterval) async -> CapturePresentation? {
+        await presentationSource.presentation(atHostTime: hostTime)
     }
 
     func updateDelay(_ delayMilliseconds: Int) {
@@ -246,6 +244,7 @@ final class ScreenCaptureService {
         activeBootstrap = nil
 
         Task {
+            await presentationSource.setCapturePipeline(nil)
             try? await stream?.stopCapture()
             if let capturePipeline {
                 await capturePipeline.reset()
@@ -364,6 +363,22 @@ final class ScreenCaptureService {
             name: displayName,
             frameSize: CGSize(width: display.width, height: display.height)
         )
+    }
+}
+
+private actor CapturePresentationSource {
+    private var capturePipeline: CapturePipeline?
+
+    func setCapturePipeline(_ capturePipeline: CapturePipeline?) {
+        self.capturePipeline = capturePipeline
+    }
+
+    func presentation(atHostTime hostTime: TimeInterval) async -> CapturePresentation? {
+        guard let capturePipeline else {
+            return nil
+        }
+
+        return await capturePipeline.presentation(atHostTime: hostTime)
     }
 }
 

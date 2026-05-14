@@ -34,7 +34,7 @@ enum PreparedFrameResult {
 
 struct PreparedFrame {
     let image: CGImage
-    let sourceTime: TimeInterval?
+    let sourceTime: TimeInterval
     let hostTime: TimeInterval
     let imageDescription: String
 }
@@ -64,7 +64,7 @@ final class CaptureFramePreparer {
         return .accepted(
             PreparedFrame(
                 image: cgImage,
-                sourceTime: sourceTime(for: sampleBuffer),
+                sourceTime: sourceTime(for: sampleBuffer, attachments: attachments),
                 hostTime: hostTime(for: attachments),
                 imageDescription: "\(cgImage.width)x\(cgImage.height)"
             )
@@ -127,17 +127,25 @@ final class CaptureFramePreparer {
         return croppedRect.isNull || croppedRect.isEmpty ? extent : croppedRect
     }
 
-    private func sourceTime(for sampleBuffer: CMSampleBuffer) -> TimeInterval? {
+    private func sourceTime(
+        for sampleBuffer: CMSampleBuffer,
+        attachments: [SCStreamFrameInfo: Any]?
+    ) -> TimeInterval {
+        let displayTime = hostTime(for: attachments)
+        if displayTime > 0 {
+            return displayTime
+        }
+
         let presentationTimeStamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         guard presentationTimeStamp.isValid,
               !presentationTimeStamp.isIndefinite,
               !presentationTimeStamp.isPositiveInfinity,
               !presentationTimeStamp.isNegativeInfinity else {
-            return nil
+            return CACurrentMediaTime()
         }
 
         let seconds = presentationTimeStamp.seconds
-        return seconds.isFinite ? seconds : nil
+        return seconds.isFinite ? seconds : CACurrentMediaTime()
     }
 
     private func hostTime(for attachments: [SCStreamFrameInfo: Any]?) -> TimeInterval {
@@ -213,7 +221,7 @@ actor CapturePipeline {
         }
 
         acceptedFrames += 1
-        let sourceTime = preparedFrame.sourceTime ?? fallbackSourceTime(forHostTime: preparedFrame.hostTime)
+        let sourceTime = preparedFrame.sourceTime
         latestSourceTime = sourceTime
         latestHostTime = preparedFrame.hostTime
         latestImageDescription = preparedFrame.imageDescription
@@ -290,16 +298,6 @@ actor CapturePipeline {
                 hostTime: hostTime
             )
         )
-    }
-
-    private func fallbackSourceTime(forHostTime hostTime: TimeInterval) -> TimeInterval {
-        guard let latestSourceTime,
-              let latestHostTime else {
-            return hostTime
-        }
-
-        let hostDelta = max(hostTime - latestHostTime, 1.0 / 60.0)
-        return latestSourceTime + hostDelta
     }
 
     private func estimatedSourceTime(atHostTime hostTime: TimeInterval) -> TimeInterval? {
