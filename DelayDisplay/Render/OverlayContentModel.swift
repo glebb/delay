@@ -1,9 +1,13 @@
+import Combine
 import CoreGraphics
+import QuartzCore
 import Foundation
 
 @MainActor
 final class OverlayContentModel: ObservableObject {
-    @Published private(set) var image: CGImage?
+    let framePublisher = PassthroughSubject<CGImage?, Never>()
+
+    @Published private(set) var hasImage = false
     @Published private(set) var delayMilliseconds = 0
     @Published private(set) var statusLine = "Idle"
     @Published private(set) var isWarmingUp = false
@@ -22,6 +26,7 @@ final class OverlayContentModel: ObservableObject {
         qualityPresetDescription: "Balanced",
         latestImageDescription: "n/a"
     )
+    private var lastDebugInfoUpdateTime: TimeInterval = 0
 
     func update(delayMilliseconds: Int, statusLine: String) {
         if self.delayMilliseconds != delayMilliseconds {
@@ -40,20 +45,32 @@ final class OverlayContentModel: ObservableObject {
     }
 
     func updateFrame(_ frame: CGImage?, isWarmingUp: Bool, debugInfo: CaptureDebugInfo) {
-        self.debugInfo = debugInfo
-        self.isWarmingUp = isWarmingUp
-
-        guard let frame else {
-            return
+        let shouldShowPlaceholder = frame == nil && !hasImage
+        if self.isWarmingUp != shouldShowPlaceholder && (shouldShowPlaceholder || !isWarmingUp) {
+            self.isWarmingUp = shouldShowPlaceholder
         }
 
-        image = frame
+        if let frame {
+            if !hasImage {
+                hasImage = true
+            }
+
+            framePublisher.send(frame)
+        }
+
+        let now = CACurrentMediaTime()
+        if now - lastDebugInfoUpdateTime >= 0.125 {
+            self.debugInfo = debugInfo
+            lastDebugInfoUpdateTime = now
+        }
     }
 
     func reset() {
-        image = nil
+        framePublisher.send(nil)
+        hasImage = false
         isWarmingUp = false
         statusLine = "Idle"
+        lastDebugInfoUpdateTime = 0
         debugInfo = CaptureDebugInfo(
             receivedFrames: 0,
             acceptedFrames: 0,
