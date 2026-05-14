@@ -23,8 +23,11 @@ final class SettingsWindowController: NSWindowController {
         let hostingController = self.hostingController ?? NSHostingController(rootView: rootView)
         hostingController.rootView = rootView
 
+        let targetContentSize = NSSize(width: 720, height: 500)
+        let minimumContentSize = NSSize(width: 660, height: 420)
+
         let window = self.window ?? NSWindow(
-            contentRect: CGRect(x: 0, y: 0, width: 520, height: 560),
+            contentRect: CGRect(x: 0, y: 0, width: targetContentSize.width, height: targetContentSize.height),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -36,7 +39,13 @@ final class SettingsWindowController: NSWindowController {
         window.isReleasedWhenClosed = false
         window.level = .floating
         window.collectionBehavior = [.moveToActiveSpace]
+        window.contentMinSize = minimumContentSize
         window.setFrameAutosaveName("DelayDisplaySettingsWindow")
+
+        if window.contentLayoutRect.width < minimumContentSize.width || window.contentLayoutRect.height < minimumContentSize.height {
+            window.setContentSize(targetContentSize)
+        }
+
         window.center()
 
         self.window = window

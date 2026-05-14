@@ -60,6 +60,16 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    @Published var selectedDisplayID: Int? {
+        didSet {
+            if let selectedDisplayID {
+                userDefaults.set(selectedDisplayID, forKey: Self.selectedDisplayIDKey)
+            } else {
+                userDefaults.removeObject(forKey: Self.selectedDisplayIDKey)
+            }
+        }
+    }
+
     @Published var showsDebugHUD: Bool {
         didSet {
             userDefaults.set(showsDebugHUD, forKey: Self.showsDebugHUDKey)
@@ -94,6 +104,7 @@ final class SettingsStore: ObservableObject {
     private static let delayKey = "delayMilliseconds"
     private static let captureModeKey = "captureMode"
     private static let selectedWindowIDKey = "selectedWindowID"
+    private static let selectedDisplayIDKey = "selectedDisplayID"
     private static let showsDebugHUDKey = "showsDebugHUD"
     private static let keepsOverlayOnTopKey = "keepsOverlayOnTop"
     private static let liveModeOnKeyPressEnabledKey = "liveModeOnKeyPressEnabled"
@@ -106,6 +117,7 @@ final class SettingsStore: ObservableObject {
         let storedCaptureMode = userDefaults.string(forKey: Self.captureModeKey)
         self.captureMode = CaptureMode(rawValue: storedCaptureMode ?? "") ?? .displayPreview
         self.selectedWindowID = userDefaults.object(forKey: Self.selectedWindowIDKey) as? Int
+        self.selectedDisplayID = userDefaults.object(forKey: Self.selectedDisplayIDKey) as? Int
         if userDefaults.object(forKey: Self.showsDebugHUDKey) == nil {
             self.showsDebugHUD = true
         } else {
@@ -131,6 +143,10 @@ final class SettingsStore: ObservableObject {
 
     func setSelectedWindowID(_ value: Int?) {
         selectedWindowID = value
+    }
+
+    func setSelectedDisplayID(_ value: Int?) {
+        selectedDisplayID = value
     }
 
     func setLiveModeGracePeriodSeconds(_ value: Int) {

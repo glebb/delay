@@ -1,12 +1,13 @@
 # DelayDisplay
 
-DelayDisplay is a native macOS app with a Dock icon and companion menu bar control that captures either the full display or a specific window, buffers frames in memory, and presents them with delay. The current implementation supports a movable display preview mode, an optional always-on-top presentation setting, and a fullscreen selected-window mode for single-monitor use.
+DelayDisplay is a native macOS app with a Dock icon and companion menu bar control that captures either a selected display or a specific window, buffers frames in memory, and presents them with delay. The current implementation supports a movable display preview mode, an optional always-on-top presentation setting, and a fullscreen selected-window mode for single-monitor use.
 
 ## Current status
 
 - Menu bar app shell with start, stop, settings, and quit actions
 - Delay setting stored in `UserDefaults` and constrained to `0...10000` milliseconds
 - Capture mode setting for display preview or fullscreen selected-window capture
+- Monitor picker for display preview mode, persisted in `UserDefaults`
 - Refreshable window picker for choosing the app window used by fullscreen capture
 - Optional debug HUD toggle for the delayed output window
 - Optional always-on-top toggle for keeping the delayed window above normal app windows in the current Space
@@ -15,11 +16,12 @@ DelayDisplay is a native macOS app with a Dock icon and companion menu bar contr
 - Debug HUD instrumentation for buffered span and effective emitted delay
 - Capture tuned for smoother playback with a 60 fps target plus capped capture resolution to limit pixel workload
 - Screen recording permission wrapper via CoreGraphics
-- ScreenCaptureKit bootstrap that resolves the first shareable display and excludes the app's own process from capture
+- ScreenCaptureKit bootstrap that resolves the selected display for preview mode and excludes the app's own process from capture
 - ScreenCaptureKit stream output converted into delayed image updates
 - In-memory frame buffer keyed by presentation timestamps
 - Movable preview window for full-display mode and fullscreen presentation for selected-window mode
 - Optional always-on-top window level for both presentation modes within the active Space
+- Preview windows open on the selected monitor in that monitor's active Space; native macOS fullscreen Spaces remain isolated
 - Emergency Escape shortcut and preview-window close button both stop delayed output
 - Optional global key activity monitoring for temporary live mode while another app has focus, which requires Accessibility access and still may not detect some macOS system shortcuts
 
@@ -62,6 +64,6 @@ DelayDisplay is a native macOS app with a Dock icon and companion menu bar contr
 ## Next implementation slice
 
 - Add a user-facing quality/performance mode so capture size and frame rate can be tuned explicitly
-- Add display selection alongside the current selected-window picker
+- Consider a Spaces policy for preview windows, such as optional all-Spaces behavior vs. keeping the current active-Space-only model
 - Extend soak-test instrumentation with long-run frame pacing and dropped-frame trends
 - Tune frame pacing and verify effective delay on real hardware at 60 fps

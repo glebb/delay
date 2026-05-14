@@ -9,6 +9,9 @@ final class DelayCoordinator: ObservableObject {
     @Published private(set) var isBusy = false
     @Published private(set) var statusLine = "Idle"
     @Published private(set) var lastErrorMessage: String?
+    @Published private(set) var availableDisplays: [CapturedDisplayOption] = []
+    @Published private(set) var isRefreshingDisplays = false
+    @Published private(set) var displaySelectionMessage: String?
     @Published private(set) var availableWindows: [CapturedWindowOption] = []
     @Published private(set) var isRefreshingWindows = false
     @Published private(set) var windowSelectionMessage: String?
@@ -83,6 +86,7 @@ final class DelayCoordinator: ObservableObject {
             let bootstrap = try await screenCaptureService.prepareBootstrap(
                 excludingBundleIdentifier: Bundle.main.bundleIdentifier,
                 captureMode: settingsStore.captureMode,
+                selectedDisplayID: settingsStore.selectedDisplayID,
                 selectedWindowID: settingsStore.selectedWindowID
             )
 
@@ -173,6 +177,18 @@ final class DelayCoordinator: ObservableObject {
         applyEffectiveDelay(isWarmingUp: false)
     }
 
+    func applyUpdatedCaptureConfiguration() {
+        guard isRunning else {
+            return
+        }
+
+        stop()
+
+        Task {
+            await start()
+        }
+    }
+
     func applyUpdatedPresentationSettings() {
         guard isRunning else { return }
 
@@ -251,6 +267,47 @@ final class DelayCoordinator: ObservableObject {
         }
     }
 
+    func refreshAvailableDisplays(requestPermission: Bool = false) async {
+        guard !isRefreshingDisplays else { return }
+
+        isRefreshingDisplays = true
+        defer {
+            isRefreshingDisplays = false
+        }
+
+        if requestPermission {
+            let granted = permissionsService.requestScreenRecordingPermissionIfNeeded()
+            guard granted else {
+                availableDisplays = []
+                displaySelectionMessage = "Grant Screen Recording access in System Settings > Privacy & Security, then quit and relaunch DelayDisplay."
+                return
+            }
+        } else if !permissionsService.hasScreenRecordingPermission() {
+            availableDisplays = []
+            displaySelectionMessage = "Grant Screen Recording access, relaunch DelayDisplay, then refresh to load monitors."
+            return
+        }
+
+        do {
+            let displays = try await screenCaptureService.availableDisplays()
+
+            availableDisplays = displays
+            displaySelectionMessage = displays.isEmpty
+                ? "No shareable monitors are currently available."
+                : nil
+
+            if let selectedDisplayID = settingsStore.selectedDisplayID,
+               displays.contains(where: { $0.id == selectedDisplayID }) {
+                return
+            }
+
+            settingsStore.setSelectedDisplayID(displays.first?.id)
+        } catch {
+            availableDisplays = []
+            displaySelectionMessage = error.localizedDescription
+        }
+    }
+
     private var effectiveDelayMilliseconds: Int {
         isTemporaryLiveModeActive ? SettingsStore.minimumDelay : settingsStore.delayMilliseconds
     }
@@ -269,7 +326,7 @@ final class DelayCoordinator: ObservableObject {
         liveModeResetTask?.cancel()
         liveModeResetTask = Task { [weak self] in
             do {
-                try await Task.sleep(nanoseconds: liveModeTimeoutNanoseconds)
+                try await Task.sleep(nanoseconds: self?.liveModeTimeoutNanoseconds ?? 0)
             } catch {
                 return
             }
@@ -365,18 +422,6 @@ enum DelayCoordinatorError: LocalizedError {
         switch self {
         case .noMatchingScreen:
             return "The selected display could not be mapped to an active screen."
-        }
-    }
-}
-
-private extension NSScreen {
-    static func screen(withDisplayID displayID: CGDirectDisplayID) -> NSScreen? {
-        screens.first { screen in
-            guard let screenNumber = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
-                return false
-            }
-
-            return CGDirectDisplayID(screenNumber.uint32Value) == displayID
         }
     }
 }

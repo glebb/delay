@@ -10,7 +10,7 @@ struct DelayDisplayApp: App {
                 settingsStore: AppState.shared.model.settingsStore,
                 coordinator: AppState.shared.model.coordinator
             )
-            .frame(width: 360)
+            .frame(minWidth: 660, idealWidth: 720, minHeight: 420, idealHeight: 500)
         }
     }
 }

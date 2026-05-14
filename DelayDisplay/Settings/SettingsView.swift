@@ -7,18 +7,59 @@ struct SettingsView: View {
     @State private var draftDelay = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                headerSection
+                captureSection
+
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .top, spacing: 16) {
+                        leftColumn
+                        rightColumn
+                    }
+
+                    VStack(alignment: .leading, spacing: 16) {
+                        leftColumn
+                        rightColumn
+                    }
+                }
+
+                runtimeSection
+                actionSection
+            }
+            .padding(18)
+            .frame(minWidth: 660, idealWidth: 720, maxWidth: .infinity, alignment: .topLeading)
+        }
+        .onAppear {
+            draftDelay = String(settingsStore.delayMilliseconds)
+        }
+        .onChange(of: settingsStore.delayMilliseconds) { newValue in
+            draftDelay = String(newValue)
+        }
+        .task(id: settingsStore.captureMode) {
+            switch settingsStore.captureMode {
+            case .displayPreview:
+                await coordinator.refreshAvailableDisplays()
+            case .frontmostWindowFullscreen:
+                await coordinator.refreshAvailableWindows()
+            }
+        }
+    }
+
+    private var headerSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
             Text("DelayDisplay")
                 .font(.title2.weight(.semibold))
 
-            Text("Configure the delayed source and presentation mode. On a single monitor, fullscreen replay is only practical for a specific app window; display capture remains available in preview mode.")
+            Text("Configure the delayed source and presentation mode. The settings window now scrolls and spreads controls horizontally so it still fits shorter laptop screens.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
 
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Capture mode")
-                    .font(.headline)
-
+    private var captureSection: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
                 Picker("Capture mode", selection: $settingsStore.captureMode) {
                     ForEach(CaptureMode.allCases) { mode in
                         Text(mode.title).tag(mode)
@@ -29,92 +70,85 @@ struct SettingsView: View {
                 Text(settingsStore.captureMode.summary)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-            }
 
-            if settingsStore.captureMode == .frontmostWindowFullscreen {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Window")
-                        .font(.headline)
-
-                    HStack(alignment: .center, spacing: 12) {
-                        Picker(
-                            "Window",
-                            selection: Binding(
-                                get: { settingsStore.selectedWindowID },
-                                set: { settingsStore.setSelectedWindowID($0) }
-                            )
-                        ) {
-                            ForEach(coordinator.availableWindows) { window in
-                                Text(window.displayName).tag(Optional(window.id))
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(maxWidth: .infinity)
-                        .disabled(coordinator.availableWindows.isEmpty)
-
-                        Button(coordinator.isRefreshingWindows ? "Refreshing…" : "Refresh") {
-                            Task {
-                                await coordinator.refreshAvailableWindows(requestPermission: true)
-                            }
-                        }
-                        .disabled(coordinator.isRefreshingWindows)
-                    }
-
-                    if let selectedWindow = selectedWindow {
-                        Text("Selected: \(selectedWindow.displayName) • \(selectedWindow.detail)")
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    } else if let windowSelectionMessage = coordinator.windowSelectionMessage {
-                        Text(windowSelectionMessage)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                switch settingsStore.captureMode {
+                case .displayPreview:
+                    previewDisplayPicker
+                case .frontmostWindowFullscreen:
+                    windowPicker
                 }
             }
+        } label: {
+            sectionTitle("Capture")
+        }
+    }
 
+    private var leftColumn: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            delaySection
+            presentationSection
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private var rightColumn: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            liveModeSection
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private var delaySection: some View {
+        GroupBox {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Delay (milliseconds)")
-                    .font(.headline)
-
-                HStack(spacing: 12) {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
                     TextField("Delay", text: $draftDelay)
                         .textFieldStyle(.roundedBorder)
-                        .frame(width: 96)
+                        .frame(width: 88)
                         .onSubmit(applyDraftDelay)
 
-                    Text("0 - 10000")
-                        .foregroundStyle(.secondary)
+                    Slider(
+                        value: Binding(
+                            get: { Double(settingsStore.delayMilliseconds) },
+                            set: { settingsStore.setDelay(Int($0.rounded())) }
+                        ),
+                        in: Double(SettingsStore.minimumDelay)...Double(SettingsStore.maximumDelay),
+                        step: 50
+                    )
+
+                    Text("\(settingsStore.delayMilliseconds) ms")
+                        .font(.system(.body, design: .monospaced))
+                        .frame(width: 96, alignment: .trailing)
                 }
 
-                Slider(
-                    value: Binding(
-                        get: { Double(settingsStore.delayMilliseconds) },
-                        set: { settingsStore.setDelay(Int($0.rounded())) }
-                    ),
-                    in: Double(SettingsStore.minimumDelay)...Double(SettingsStore.maximumDelay),
-                    step: 50
-                )
-
-                Text("Current delay: \(settingsStore.delayMilliseconds) ms")
-                    .font(.system(.body, design: .monospaced))
+                Text("Range: 0 - 10000 ms")
+                    .foregroundStyle(.secondary)
             }
+        } label: {
+            sectionTitle("Delay")
+        }
+    }
 
-            Toggle("Show debug HUD", isOn: $settingsStore.showsDebugHUD)
+    private var presentationSection: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle("Show debug HUD", isOn: $settingsStore.showsDebugHUD)
 
-            VStack(alignment: .leading, spacing: 6) {
                 Toggle("Keep delay window above other apps", isOn: $settingsStore.keepsOverlayOnTop)
 
-                Text("Applies in the current Space only. Native macOS fullscreen Spaces are not pinned above other apps.")
+                Text("Applies in the current Space only. Native macOS fullscreen Spaces stay isolated, so DelayDisplay does not pin itself above them.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        } label: {
+            sectionTitle("Presentation")
+        }
+    }
 
-            VStack(alignment: .leading, spacing: 6) {
+    private var liveModeSection: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 10) {
                 Toggle("Temporarily switch to live mode while typing", isOn: $settingsStore.liveModeOnKeyPressEnabled)
-
-                Text("When enabled, key presses in the focused app temporarily force 0 ms delay. DelayDisplay returns to the configured delay after \(settingsStore.liveModeGracePeriodSeconds) \(liveModeGracePeriodUnit) without new key presses. Detecting typing in other apps requires Accessibility access, and some macOS system shortcuts may still not be detected.")
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
 
                 Stepper(
                     value: Binding(
@@ -125,42 +159,116 @@ struct SettingsView: View {
                 ) {
                     Text("Live mode grace period: \(settingsStore.liveModeGracePeriodSeconds) \(liveModeGracePeriodUnit)")
                 }
-            }
 
+                Text("When enabled, key presses in the focused app temporarily force 0 ms delay. DelayDisplay returns to the configured delay after \(settingsStore.liveModeGracePeriodSeconds) \(liveModeGracePeriodUnit) without new key presses. Detecting typing in other apps requires Accessibility access, and some macOS system shortcuts may still not be detected.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } label: {
+            sectionTitle("Live Mode")
+        }
+    }
+
+    private var runtimeSection: some View {
+        GroupBox {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Runtime")
-                    .font(.headline)
                 Text(coordinator.statusLine)
+
                 if let lastErrorMessage = coordinator.lastErrorMessage {
                     Text(lastErrorMessage)
                         .foregroundStyle(.red)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
+        } label: {
+            sectionTitle("Runtime")
+        }
+    }
 
-            HStack {
-                Button(coordinator.isRunning ? "Stop" : "Start") {
-                    coordinator.toggleRunning()
+    private var actionSection: some View {
+        HStack {
+            Button(coordinator.isRunning ? "Stop" : "Start") {
+                coordinator.toggleRunning()
+            }
+            .keyboardShortcut(.defaultAction)
+
+            Spacer()
+        }
+    }
+
+    private var previewDisplayPicker: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 12) {
+                Picker(
+                    "Monitor",
+                    selection: Binding(
+                        get: { settingsStore.selectedDisplayID },
+                        set: { settingsStore.setSelectedDisplayID($0) }
+                    )
+                ) {
+                    ForEach(coordinator.availableDisplays) { display in
+                        Text(display.displayName).tag(Optional(display.id))
+                    }
                 }
-                .keyboardShortcut(.defaultAction)
+                .labelsHidden()
+                .frame(maxWidth: .infinity)
+                .disabled(coordinator.availableDisplays.isEmpty)
 
-                Spacer()
-            }
-        }
-        .padding(20)
-        .frame(minWidth: 360)
-        .onAppear {
-            draftDelay = String(settingsStore.delayMilliseconds)
-        }
-        .onChange(of: settingsStore.delayMilliseconds) { newValue in
-            draftDelay = String(newValue)
-        }
-        .task(id: settingsStore.captureMode) {
-            guard settingsStore.captureMode == .frontmostWindowFullscreen else {
-                return
+                Button(coordinator.isRefreshingDisplays ? "Refreshing…" : "Refresh") {
+                    Task {
+                        await coordinator.refreshAvailableDisplays(requestPermission: true)
+                    }
+                }
+                .disabled(coordinator.isRefreshingDisplays)
             }
 
-            await coordinator.refreshAvailableWindows()
+            if let selectedDisplay = selectedDisplay {
+                Text("Selected: \(selectedDisplay.displayName) • \(selectedDisplay.detail). Preview opens in that monitor's active Space.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let displaySelectionMessage = coordinator.displaySelectionMessage {
+                Text(displaySelectionMessage)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var windowPicker: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 12) {
+                Picker(
+                    "Window",
+                    selection: Binding(
+                        get: { settingsStore.selectedWindowID },
+                        set: { settingsStore.setSelectedWindowID($0) }
+                    )
+                ) {
+                    ForEach(coordinator.availableWindows) { window in
+                        Text(window.displayName).tag(Optional(window.id))
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: .infinity)
+                .disabled(coordinator.availableWindows.isEmpty)
+
+                Button(coordinator.isRefreshingWindows ? "Refreshing…" : "Refresh") {
+                    Task {
+                        await coordinator.refreshAvailableWindows(requestPermission: true)
+                    }
+                }
+                .disabled(coordinator.isRefreshingWindows)
+            }
+
+            if let selectedWindow = selectedWindow {
+                Text("Selected: \(selectedWindow.displayName) • \(selectedWindow.detail)")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let windowSelectionMessage = coordinator.windowSelectionMessage {
+                Text(windowSelectionMessage)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -170,6 +278,19 @@ struct SettingsView: View {
         }
 
         return coordinator.availableWindows.first { $0.id == selectedWindowID }
+    }
+
+    private var selectedDisplay: CapturedDisplayOption? {
+        guard let selectedDisplayID = settingsStore.selectedDisplayID else {
+            return nil
+        }
+
+        return coordinator.availableDisplays.first { $0.id == selectedDisplayID }
+    }
+
+    private func sectionTitle(_ title: String) -> some View {
+        Text(title)
+            .font(.headline)
     }
 
     private func applyDraftDelay() {

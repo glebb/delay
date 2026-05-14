@@ -1,8 +1,25 @@
+import AppKit
 import CoreGraphics
 import CoreMedia
 import CoreVideo
 import Foundation
 import ScreenCaptureKit
+
+struct CapturedDisplayOption: Identifiable, Equatable {
+    let displayID: CGDirectDisplayID
+    let name: String
+    let frameSize: CGSize
+
+    var id: Int { Int(displayID) }
+
+    var displayName: String {
+        name
+    }
+
+    var detail: String {
+        "\(Int(frameSize.width.rounded())) x \(Int(frameSize.height.rounded()))"
+    }
+}
 
 struct CapturedWindowOption: Identifiable, Equatable {
     let windowID: CGWindowID
@@ -36,6 +53,7 @@ enum ScreenCaptureServiceError: LocalizedError {
     case noDisplaysFound
     case noActiveBootstrap
     case noEligibleWindowsFound
+    case selectedDisplayUnavailable
     case selectedWindowUnavailable
 
     var errorDescription: String? {
@@ -46,6 +64,8 @@ enum ScreenCaptureServiceError: LocalizedError {
             return "Capture was started before a display bootstrap was prepared."
         case .noEligibleWindowsFound:
             return "No eligible app windows were available to capture. Open the target window and refresh the list."
+        case .selectedDisplayUnavailable:
+            return "The selected monitor is no longer available. Refresh the monitor list and choose it again."
         case .selectedWindowUnavailable:
             return "The selected window is no longer available. Refresh the window list and choose it again."
         }
@@ -64,6 +84,13 @@ final class ScreenCaptureService {
     private var capturePipeline: CapturePipeline?
     private let sampleHandlerQueue = DispatchQueue(label: "DelayDisplay.ScreenCapture.Video")
 
+    func availableDisplays() async throws -> [CapturedDisplayOption] {
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        return content.displays.enumerated().map { index, display in
+            makeCapturedDisplayOption(from: display, fallbackIndex: index)
+        }
+    }
+
     func availableWindows(excludingBundleIdentifier bundleIdentifier: String?) async throws -> [CapturedWindowOption] {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         return orderedEligibleWindows(from: content.windows, excludingBundleIdentifier: bundleIdentifier).map { window in
@@ -79,6 +106,7 @@ final class ScreenCaptureService {
     func prepareBootstrap(
         excludingBundleIdentifier bundleIdentifier: String?,
         captureMode: CaptureMode,
+        selectedDisplayID: Int?,
         selectedWindowID: Int?
     ) async throws -> CaptureBootstrap {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
@@ -86,7 +114,16 @@ final class ScreenCaptureService {
         let bootstrap: CaptureBootstrap
         switch captureMode {
         case .displayPreview:
-            guard let display = content.displays.first else {
+            let display: SCDisplay
+            if let selectedDisplayID {
+                guard let matchingDisplay = content.displays.first(where: { Int($0.displayID) == selectedDisplayID }) else {
+                    throw ScreenCaptureServiceError.selectedDisplayUnavailable
+                }
+
+                display = matchingDisplay
+            } else if let firstDisplay = content.displays.first {
+                display = firstDisplay
+            } else {
                 throw ScreenCaptureServiceError.noDisplaysFound
             }
 
@@ -311,6 +348,16 @@ final class ScreenCaptureService {
             height: max((sourceHeight * scale).rounded(.down), 1)
         )
     }
+
+    private func makeCapturedDisplayOption(from display: SCDisplay, fallbackIndex: Int) -> CapturedDisplayOption {
+        let displayName = NSScreen.screen(withDisplayID: display.displayID)?.localizedName ?? "Display \(fallbackIndex + 1)"
+
+        return CapturedDisplayOption(
+            displayID: display.displayID,
+            name: displayName,
+            frameSize: CGSize(width: display.width, height: display.height)
+        )
+    }
 }
 
 private final class ScreenStreamOutputHandler: NSObject, SCStreamOutput {
@@ -327,6 +374,18 @@ private final class ScreenStreamOutputHandler: NSObject, SCStreamOutput {
 
         Task {
             await capturePipeline.process(sampleBuffer: sampleBuffer)
+        }
+    }
+}
+
+extension NSScreen {
+    static func screen(withDisplayID displayID: CGDirectDisplayID) -> NSScreen? {
+        screens.first { screen in
+            guard let screenNumber = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+                return false
+            }
+
+            return CGDirectDisplayID(screenNumber.uint32Value) == displayID
         }
     }
 }
