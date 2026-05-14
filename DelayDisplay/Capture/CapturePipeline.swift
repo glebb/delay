@@ -10,99 +10,65 @@ struct CaptureDebugInfo: Sendable {
     let acceptedFrames: Int
     let emittedFrames: Int
     let skippedFrames: Int
+    let underrunCount: Int
     let bufferedFrames: Int
     let bufferedDurationMilliseconds: Int
     let effectiveDelayMilliseconds: Int?
+    let captureFramesPerSecond: Int
+    let presentationFramesPerSecond: Int
+    let qualityPresetDescription: String
     let latestImageDescription: String
 }
 
-typealias DelayedFrameConsumer = @Sendable (_ image: CGImage?, _ isWarmingUp: Bool, _ debugInfo: CaptureDebugInfo) async -> Void
+struct CapturePresentation: Sendable {
+    let image: CGImage?
+    let isWarmingUp: Bool
+    let debugInfo: CaptureDebugInfo
+}
 
-actor CapturePipeline {
-    private let frameBuffer: FrameRingBuffer
-    private let imageContext: CIContext
-    private let frameConsumer: DelayedFrameConsumer
-    private var delayMilliseconds: Int
-    private var receivedFrames = 0
-    private var acceptedFrames = 0
-    private var emittedFrames = 0
-    private var skippedFrames = 0
+enum PreparedFrameResult {
+    case accepted(PreparedFrame)
+    case skipped
+}
 
-    init(
-        delayMilliseconds: Int,
-        frameBuffer: FrameRingBuffer = FrameRingBuffer(),
-        imageContext: CIContext = CIContext(),
-        frameConsumer: @escaping DelayedFrameConsumer
-    ) {
-        self.delayMilliseconds = delayMilliseconds
-        self.frameBuffer = frameBuffer
-        self.imageContext = imageContext
-        self.frameConsumer = frameConsumer
-    }
+struct PreparedFrame {
+    let image: CGImage
+    let sourceTime: TimeInterval?
+    let hostTime: TimeInterval
+    let imageDescription: String
+}
 
-    func updateDelay(_ delayMilliseconds: Int) {
-        self.delayMilliseconds = delayMilliseconds
-    }
+final class CaptureFramePreparer {
+    private let imageContext = CIContext()
 
-    func reset() async {
-        await frameBuffer.clear()
-        receivedFrames = 0
-        acceptedFrames = 0
-        emittedFrames = 0
-        skippedFrames = 0
-    }
-
-    func process(sampleBuffer: CMSampleBuffer) async {
-        receivedFrames += 1
-
+    func prepare(sampleBuffer: CMSampleBuffer) -> PreparedFrameResult {
         guard sampleBuffer.isValid,
               let imageBuffer = sampleBuffer.imageBuffer else {
-            skippedFrames += 1
-            return
+            return .skipped
         }
 
         let attachments = sampleAttachments(for: sampleBuffer)
         if let attachments,
            !isUsableFrame(attachments) {
-            skippedFrames += 1
-            return
+            return .skipped
         }
 
-        let captureTime = CACurrentMediaTime()
+        let hostTime = CACurrentMediaTime()
         let ciImage = CIImage(cvImageBuffer: imageBuffer)
         let visibleRect = visibleImageRect(for: ciImage.extent, attachments: attachments)
 
         guard let cgImage = imageContext.createCGImage(ciImage, from: visibleRect) else {
-            skippedFrames += 1
-            return
+            return .skipped
         }
 
-        acceptedFrames += 1
-        let bufferedFrames = await frameBuffer.append(cgImage, captureTime: captureTime)
-        let delayedEntry = await frameBuffer.entry(
-            forDelayMilliseconds: delayMilliseconds,
-            latestCaptureTime: captureTime
+        return .accepted(
+            PreparedFrame(
+                image: cgImage,
+                sourceTime: sourceTime(for: sampleBuffer),
+                hostTime: hostTime,
+                imageDescription: "\(cgImage.width)x\(cgImage.height)"
+            )
         )
-        let delayedImage = delayedEntry?.image
-        let imageToDisplay = delayedImage ?? cgImage
-        let bufferedDurationMilliseconds = await frameBuffer.bufferedDurationMilliseconds(latestCaptureTime: captureTime)
-
-        if delayedImage != nil {
-            emittedFrames += 1
-        }
-
-        let debugInfo = CaptureDebugInfo(
-            receivedFrames: receivedFrames,
-            acceptedFrames: acceptedFrames,
-            emittedFrames: emittedFrames,
-            skippedFrames: skippedFrames,
-            bufferedFrames: bufferedFrames,
-            bufferedDurationMilliseconds: bufferedDurationMilliseconds,
-            effectiveDelayMilliseconds: delayedEntry.map { Int(((captureTime - $0.captureTime) * 1_000).rounded()) },
-            latestImageDescription: "\(cgImage.width)x\(cgImage.height)"
-        )
-
-        await frameConsumer(imageToDisplay, delayedImage == nil, debugInfo)
     }
 
     private func sampleAttachments(for sampleBuffer: CMSampleBuffer) -> [SCStreamFrameInfo: Any]? {
@@ -159,5 +125,207 @@ actor CapturePipeline {
 
         let croppedRect = extent.intersection(scaledRect)
         return croppedRect.isNull || croppedRect.isEmpty ? extent : croppedRect
+    }
+
+    private func sourceTime(for sampleBuffer: CMSampleBuffer) -> TimeInterval? {
+        let presentationTimeStamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        guard presentationTimeStamp.isValid,
+              !presentationTimeStamp.isIndefinite,
+              !presentationTimeStamp.isPositiveInfinity,
+              !presentationTimeStamp.isNegativeInfinity else {
+            return nil
+        }
+
+        let seconds = presentationTimeStamp.seconds
+        return seconds.isFinite ? seconds : nil
+    }
+}
+
+actor CapturePipeline {
+    private let frameBuffer: FrameRingBuffer
+    private let qualityPreset: CaptureQualityPreset
+    private var delayMilliseconds: Int
+    private var receivedFrames = 0
+    private var acceptedFrames = 0
+    private var emittedFrames = 0
+    private var skippedFrames = 0
+    private var underrunCount = 0
+    private var latestSourceTime: TimeInterval?
+    private var latestHostTime: TimeInterval?
+    private var latestImageDescription = "n/a"
+    private var lastPresentedSourceTime: TimeInterval?
+    private var lastPresentedImage: CGImage?
+    private var isUnderrunning = false
+    private var recentAcceptedHostTimes: [TimeInterval] = []
+    private var recentPresentedHostTimes: [TimeInterval] = []
+
+    init(
+        delayMilliseconds: Int,
+        qualityPreset: CaptureQualityPreset,
+        frameBuffer: FrameRingBuffer = FrameRingBuffer()
+    ) {
+        self.delayMilliseconds = delayMilliseconds
+        self.qualityPreset = qualityPreset
+        self.frameBuffer = frameBuffer
+    }
+
+    func updateDelay(_ delayMilliseconds: Int) {
+        self.delayMilliseconds = delayMilliseconds
+    }
+
+    func reset() async {
+        await frameBuffer.clear()
+        receivedFrames = 0
+        acceptedFrames = 0
+        emittedFrames = 0
+        skippedFrames = 0
+        underrunCount = 0
+        latestSourceTime = nil
+        latestHostTime = nil
+        latestImageDescription = "n/a"
+        lastPresentedSourceTime = nil
+        lastPresentedImage = nil
+        isUnderrunning = false
+        recentAcceptedHostTimes.removeAll(keepingCapacity: false)
+        recentPresentedHostTimes.removeAll(keepingCapacity: false)
+    }
+
+    func ingest(_ preparedFrameResult: PreparedFrameResult) async {
+        receivedFrames += 1
+
+        guard case .accepted(let preparedFrame) = preparedFrameResult else {
+            skippedFrames += 1
+            return
+        }
+
+        acceptedFrames += 1
+        let sourceTime = preparedFrame.sourceTime ?? fallbackSourceTime(forHostTime: preparedFrame.hostTime)
+        latestSourceTime = sourceTime
+        latestHostTime = preparedFrame.hostTime
+        latestImageDescription = preparedFrame.imageDescription
+        recordEvent(preparedFrame.hostTime, in: &recentAcceptedHostTimes)
+        _ = await frameBuffer.append(preparedFrame.image, sourceTime: sourceTime)
+    }
+
+    func presentation(atHostTime hostTime: TimeInterval) async -> CapturePresentation {
+        let bufferedFrames = await frameBuffer.bufferedFrameCount()
+        let bufferedDurationMilliseconds = await frameBuffer.bufferedDurationMilliseconds()
+        let estimatedSourceNow = estimatedSourceTime(atHostTime: hostTime)
+
+        guard let estimatedSourceNow else {
+            return CapturePresentation(
+                image: lastPresentedImage,
+                isWarmingUp: true,
+                debugInfo: makeDebugInfo(
+                    bufferedFrames: bufferedFrames,
+                    bufferedDurationMilliseconds: bufferedDurationMilliseconds,
+                    effectiveDelayMilliseconds: nil,
+                    hostTime: hostTime
+                )
+            )
+        }
+
+        let targetSourceTime = estimatedSourceNow - (Double(delayMilliseconds) / 1_000.0)
+        let lookupResult = await frameBuffer.entry(forTargetSourceTime: targetSourceTime)
+
+        var imageToDisplay = lastPresentedImage
+        var isWarmingUp = false
+
+        switch lookupResult {
+        case .warmingUp:
+            isWarmingUp = true
+            isUnderrunning = false
+        case .ready(let entry):
+            imageToDisplay = entry.image
+            isUnderrunning = false
+
+            if entry.sourceTime != lastPresentedSourceTime {
+                emittedFrames += 1
+                lastPresentedSourceTime = entry.sourceTime
+                lastPresentedImage = entry.image
+                recordEvent(hostTime, in: &recentPresentedHostTimes)
+            }
+        case .underrun:
+            if !isUnderrunning && lastPresentedImage != nil {
+                underrunCount += 1
+            }
+
+            isUnderrunning = true
+        }
+
+        let displayedSourceTime = lastPresentedSourceTime
+        let effectiveDelayMilliseconds = displayedSourceTime.map {
+            max(Int(((estimatedSourceNow - $0) * 1_000).rounded()), 0)
+        }
+
+        return CapturePresentation(
+            image: imageToDisplay,
+            isWarmingUp: isWarmingUp,
+            debugInfo: makeDebugInfo(
+                bufferedFrames: bufferedFrames,
+                bufferedDurationMilliseconds: bufferedDurationMilliseconds,
+                effectiveDelayMilliseconds: effectiveDelayMilliseconds,
+                hostTime: hostTime
+            )
+        )
+    }
+
+    private func fallbackSourceTime(forHostTime hostTime: TimeInterval) -> TimeInterval {
+        guard let latestSourceTime,
+              let latestHostTime else {
+            return hostTime
+        }
+
+        let hostDelta = max(hostTime - latestHostTime, 1.0 / 60.0)
+        return latestSourceTime + hostDelta
+    }
+
+    private func estimatedSourceTime(atHostTime hostTime: TimeInterval) -> TimeInterval? {
+        guard let latestSourceTime,
+              let latestHostTime else {
+            return nil
+        }
+
+        return latestSourceTime + max(hostTime - latestHostTime, 0)
+    }
+
+    private func makeDebugInfo(
+        bufferedFrames: Int,
+        bufferedDurationMilliseconds: Int,
+        effectiveDelayMilliseconds: Int?,
+        hostTime: TimeInterval
+    ) -> CaptureDebugInfo {
+        CaptureDebugInfo(
+            receivedFrames: receivedFrames,
+            acceptedFrames: acceptedFrames,
+            emittedFrames: emittedFrames,
+            skippedFrames: skippedFrames,
+            underrunCount: underrunCount,
+            bufferedFrames: bufferedFrames,
+            bufferedDurationMilliseconds: bufferedDurationMilliseconds,
+            effectiveDelayMilliseconds: effectiveDelayMilliseconds,
+            captureFramesPerSecond: framesPerSecond(for: recentAcceptedHostTimes, now: hostTime),
+            presentationFramesPerSecond: framesPerSecond(for: recentPresentedHostTimes, now: hostTime),
+            qualityPresetDescription: qualityPreset.title,
+            latestImageDescription: latestImageDescription
+        )
+    }
+
+    private func recordEvent(_ hostTime: TimeInterval, in eventTimes: inout [TimeInterval]) {
+        eventTimes.append(hostTime)
+        let oldestAllowedTime = hostTime - 1.0
+        eventTimes.removeAll(where: { $0 < oldestAllowedTime })
+    }
+
+    private func framesPerSecond(for eventTimes: [TimeInterval], now: TimeInterval) -> Int {
+        let recentEventTimes = eventTimes.filter { $0 >= now - 1.0 }
+        guard let firstEventTime = recentEventTimes.first,
+              let lastEventTime = recentEventTimes.last,
+              recentEventTimes.count > 1 else {
+            return recentEventTimes.isEmpty ? 0 : recentEventTimes.count
+        }
+
+        let elapsed = max(lastEventTime - firstEventTime, 0.001)
+        return max(Int((Double(recentEventTimes.count - 1) / elapsed).rounded()), 0)
     }
 }

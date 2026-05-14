@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import QuartzCore
 
 @MainActor
 final class DelayCoordinator: ObservableObject {
@@ -20,6 +21,7 @@ final class DelayCoordinator: ObservableObject {
     private let permissionsService: PermissionsService
     private let screenCaptureService: ScreenCaptureService
     private let overlayWindowController: OverlayWindowController
+    private let presentationTicker = PresentationTicker()
     private lazy var overlayHotkeyMonitor = OverlayHotkeyMonitor(
         onKeyActivity: { [weak self] in
             self?.handleObservedKeyPress()
@@ -34,6 +36,8 @@ final class DelayCoordinator: ObservableObject {
     )
     private var liveModeResetTask: Task<Void, Never>?
     private var isTemporaryLiveModeActive = false
+    private var lastPresentedDelayMilliseconds: Int?
+    private var lastPresentedStatusLine: String?
 
     init(
         settingsStore: SettingsStore,
@@ -52,6 +56,7 @@ final class DelayCoordinator: ObservableObject {
 
     deinit {
         liveModeResetTask?.cancel()
+        presentationTicker.stop()
     }
 
     func start() async {
@@ -83,6 +88,7 @@ final class DelayCoordinator: ObservableObject {
             let bootstrap = try await screenCaptureService.prepareBootstrap(
                 excludingBundleIdentifier: Bundle.main.bundleIdentifier,
                 captureMode: settingsStore.captureMode,
+                qualityPreset: settingsStore.captureQualityPreset,
                 selectedDisplayID: settingsStore.selectedDisplayID,
                 selectedWindowID: settingsStore.selectedWindowID
             )
@@ -114,29 +120,20 @@ final class DelayCoordinator: ObservableObject {
             try await screenCaptureService.startCapture(
                 bootstrap: bootstrap,
                 delayMilliseconds: effectiveDelayMilliseconds,
+                qualityPreset: settingsStore.captureQualityPreset,
                 excludingBundleIdentifier: Bundle.main.bundleIdentifier,
                 overlayWindowID: overlayWindowController.overlayWindowID
-            ) { [weak self] image, isWarmingUp, debugInfo in
-                guard let self else { return }
+            )
 
-                await MainActor.run {
-                    let runtimeStatus = self.currentStatusLine(isWarmingUp: isWarmingUp)
-                    let effectiveDelay = self.effectiveDelayMilliseconds
-
-                    self.statusLine = runtimeStatus
-                    self.overlayWindowController.update(
-                        delayMilliseconds: effectiveDelay,
-                        statusLine: runtimeStatus
-                    )
-                    self.overlayWindowController.display(frame: image, isWarmingUp: isWarmingUp, debugInfo: debugInfo)
-                }
-            }
-
-            overlayHotkeyMonitor.start()
             isRunning = true
+            lastPresentedDelayMilliseconds = effectiveDelayMilliseconds
+            lastPresentedStatusLine = initialStatusLine
+            startPresentationTicker(framesPerSecond: settingsStore.captureQualityPreset.presentationFramesPerSecond)
+            overlayHotkeyMonitor.start()
             statusLine = initialStatusLine
         } catch {
             resetTemporaryLiveModeState()
+            presentationTicker.stop()
             overlayWindowController.hideOverlay()
             NSApp.setActivationPolicy(.accessory)
             statusLine = "Unable to prepare capture"
@@ -148,11 +145,14 @@ final class DelayCoordinator: ObservableObject {
         guard isRunning else { return }
 
         resetTemporaryLiveModeState()
+        presentationTicker.stop()
         overlayHotkeyMonitor.stop()
         overlayWindowController.hideOverlay()
         screenCaptureService.stopCapture()
         NSApp.setActivationPolicy(.accessory)
         isRunning = false
+        lastPresentedDelayMilliseconds = nil
+        lastPresentedStatusLine = nil
         statusLine = "Idle"
         lastErrorMessage = nil
     }
@@ -357,11 +357,52 @@ final class DelayCoordinator: ObservableObject {
         let effectiveDelay = effectiveDelayMilliseconds
 
         screenCaptureService.updateDelay(effectiveDelay)
+        lastPresentedDelayMilliseconds = effectiveDelay
+        lastPresentedStatusLine = runtimeStatus
         overlayWindowController.update(
             delayMilliseconds: effectiveDelay,
             statusLine: runtimeStatus
         )
         statusLine = runtimeStatus
+    }
+
+    private func startPresentationTicker(framesPerSecond: Int) {
+        presentationTicker.start(framesPerSecond: framesPerSecond) { [weak self] in
+            guard let self else {
+                return
+            }
+
+            await self.presentCurrentFrame()
+        }
+    }
+
+    private func presentCurrentFrame() async {
+        guard isRunning,
+              let presentation = await screenCaptureService.presentation(atHostTime: CACurrentMediaTime()) else {
+            return
+        }
+
+        let runtimeStatus = currentStatusLine(isWarmingUp: presentation.isWarmingUp)
+        let effectiveDelay = effectiveDelayMilliseconds
+
+        if statusLine != runtimeStatus {
+            statusLine = runtimeStatus
+        }
+
+        if lastPresentedDelayMilliseconds != effectiveDelay || lastPresentedStatusLine != runtimeStatus {
+            lastPresentedDelayMilliseconds = effectiveDelay
+            lastPresentedStatusLine = runtimeStatus
+            overlayWindowController.update(
+                delayMilliseconds: effectiveDelay,
+                statusLine: runtimeStatus
+            )
+        }
+
+        overlayWindowController.display(
+            frame: presentation.image,
+            isWarmingUp: presentation.isWarmingUp,
+            debugInfo: presentation.debugInfo
+        )
     }
 
     private func currentStatusLine(isWarmingUp: Bool) -> String {
@@ -420,5 +461,43 @@ enum DelayCoordinatorError: LocalizedError {
         case .noMatchingScreen:
             return "The selected display could not be mapped to an active screen."
         }
+    }
+}
+
+private final class PresentationTicker {
+    private let clock = ContinuousClock()
+    private var task: Task<Void, Never>?
+
+    func start(framesPerSecond: Int = 60, tick: @escaping @Sendable () async -> Void) {
+        stop()
+
+        let normalizedFramesPerSecond = max(framesPerSecond, 1)
+        let intervalNanoseconds = max(Int64(1_000_000_000 / normalizedFramesPerSecond), 1)
+        let interval = Duration.nanoseconds(intervalNanoseconds)
+        let tolerance = Duration.nanoseconds(max(intervalNanoseconds / 10, 500_000))
+
+        task = Task {
+            var nextTick = clock.now
+
+            while !Task.isCancelled {
+                await tick()
+                nextTick += interval
+
+                do {
+                    try await clock.sleep(until: nextTick, tolerance: tolerance)
+                } catch {
+                    break
+                }
+            }
+        }
+    }
+
+    func stop() {
+        task?.cancel()
+        task = nil
+    }
+
+    deinit {
+        task?.cancel()
     }
 }

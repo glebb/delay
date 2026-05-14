@@ -13,30 +13,40 @@ final class OverlayContentModel: ObservableObject {
         acceptedFrames: 0,
         emittedFrames: 0,
         skippedFrames: 0,
+        underrunCount: 0,
         bufferedFrames: 0,
         bufferedDurationMilliseconds: 0,
         effectiveDelayMilliseconds: nil,
+        captureFramesPerSecond: 0,
+        presentationFramesPerSecond: 0,
+        qualityPresetDescription: "Balanced",
         latestImageDescription: "n/a"
     )
 
     func update(delayMilliseconds: Int, statusLine: String) {
-        self.delayMilliseconds = delayMilliseconds
-        self.statusLine = statusLine
+        if self.delayMilliseconds != delayMilliseconds {
+            self.delayMilliseconds = delayMilliseconds
+        }
+
+        if self.statusLine != statusLine {
+            self.statusLine = statusLine
+        }
     }
 
     func updatePresentation(showsDebugHUD: Bool) {
-        self.showsDebugHUD = showsDebugHUD
+        if self.showsDebugHUD != showsDebugHUD {
+            self.showsDebugHUD = showsDebugHUD
+        }
     }
 
     func updateFrame(_ frame: CGImage?, isWarmingUp: Bool, debugInfo: CaptureDebugInfo) {
         self.debugInfo = debugInfo
+        self.isWarmingUp = isWarmingUp
 
         guard let frame else {
-            self.isWarmingUp = image == nil && isWarmingUp
             return
         }
 
-        self.isWarmingUp = false
         image = frame
     }
 
@@ -49,9 +59,13 @@ final class OverlayContentModel: ObservableObject {
             acceptedFrames: 0,
             emittedFrames: 0,
             skippedFrames: 0,
+            underrunCount: 0,
             bufferedFrames: 0,
             bufferedDurationMilliseconds: 0,
             effectiveDelayMilliseconds: nil,
+            captureFramesPerSecond: 0,
+            presentationFramesPerSecond: 0,
+            qualityPresetDescription: "Balanced",
             latestImageDescription: "n/a"
         )
     }

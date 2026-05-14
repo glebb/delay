@@ -22,9 +22,13 @@ final class OverlayWindowController: NSWindowController, NSWindowDelegate {
         acceptedFrames: 0,
         emittedFrames: 0,
         skippedFrames: 0,
+        underrunCount: 0,
         bufferedFrames: 0,
         bufferedDurationMilliseconds: 0,
         effectiveDelayMilliseconds: nil,
+        captureFramesPerSecond: 0,
+        presentationFramesPerSecond: 0,
+        qualityPresetDescription: "Balanced",
         latestImageDescription: "n/a"
     )
     var onUserClose: (() -> Void)?
@@ -107,11 +111,15 @@ final class OverlayWindowController: NSWindowController, NSWindowDelegate {
 
     func update(delayMilliseconds: Int, statusLine: String) {
         contentModel.update(delayMilliseconds: delayMilliseconds, statusLine: statusLine)
-        window?.title = windowTitle(
+        let updatedTitle = windowTitle(
             delayMilliseconds: delayMilliseconds,
             statusLine: statusLine,
             presentationMode: currentPresentationMode
         )
+
+        if window?.title != updatedTitle {
+            window?.title = updatedTitle
+        }
     }
 
     func updatePresentation(showsDebugHUD: Bool, keepsOverlayOnTop: Bool) {

@@ -10,11 +10,13 @@ DelayDisplay is a native macOS app with a Dock icon and companion menu bar contr
 - Monitor picker for monitor capture, persisted in `UserDefaults`
 - Refreshable window picker for choosing the app window used by selected-window capture
 - Optional debug HUD toggle for the delayed output window
+- User-facing Smooth, Balanced, and Performance capture presets for trading capture workload against playback cadence
 - Optional always-on-top toggle for keeping the delayed window above normal app windows in the current Space
 - Optional temporary live-mode toggle that forces 0 ms delay while keys are pressed in another app, then restores the configured delay after a user-configurable inactivity grace period once Accessibility access is granted
 - Direct `CGImage` rendering in the output window to avoid per-frame `NSImage` conversion overhead
-- Debug HUD instrumentation for buffered span and effective emitted delay
-- Capture tuned for smoother playback with a 60 fps target plus capped capture resolution to limit pixel workload
+- Paced delayed presentation that renders from the buffered timeline instead of pushing every arriving capture frame directly into the UI
+- Debug HUD instrumentation for buffered span, effective emitted delay, capture fps, presentation fps, underruns, and active quality preset
+- Capture tuned for smoother playback with source-timestamp buffering plus configurable capture resolution, queue depth, and frame rate presets
 - Screen recording permission wrapper via CoreGraphics
 - ScreenCaptureKit bootstrap that resolves the selected display for preview mode and excludes the app's own process from capture
 - ScreenCaptureKit stream output converted into delayed image updates
@@ -63,7 +65,7 @@ DelayDisplay is a native macOS app with a Dock icon and companion menu bar contr
 
 ## Next implementation slice
 
-- Add a user-facing quality/performance mode so capture size and frame rate can be tuned explicitly
+- Validate Smooth, Balanced, and Performance behavior on real hardware in both monitor and selected-window capture modes
 - Consider a Spaces policy for preview windows, such as optional all-Spaces behavior vs. keeping the current active-Space-only model
 - Extend soak-test instrumentation with long-run frame pacing and dropped-frame trends
-- Tune frame pacing and verify effective delay on real hardware at 60 fps
+- Consider whether the paced presenter should move from a fixed-rate ticker to a true display-link implementation

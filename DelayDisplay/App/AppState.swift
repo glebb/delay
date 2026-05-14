@@ -58,6 +58,13 @@ final class AppModel: ObservableObject {
             }
             .store(in: &cancellables)
 
+        settingsStore.$captureQualityPreset
+            .dropFirst()
+            .sink { [weak coordinator] _ in
+                coordinator?.applyUpdatedCaptureConfiguration()
+            }
+            .store(in: &cancellables)
+
         settingsStore.$selectedWindowID
             .dropFirst()
             .sink { [weak coordinator] _ in

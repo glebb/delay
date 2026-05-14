@@ -86,6 +86,7 @@ struct SettingsView: View {
     private var leftColumn: some View {
         VStack(alignment: .leading, spacing: 16) {
             delaySection
+            qualitySection
             presentationSection
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -142,6 +143,25 @@ struct SettingsView: View {
             }
         } label: {
             sectionTitle("Presentation")
+        }
+    }
+
+    private var qualitySection: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                Picker("Playback quality", selection: $settingsStore.captureQualityPreset) {
+                    ForEach(CaptureQualityPreset.allCases) { preset in
+                        Text(preset.title).tag(preset)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Text(settingsStore.captureQualityPreset.summary)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } label: {
+            sectionTitle("Smoothness")
         }
     }
 

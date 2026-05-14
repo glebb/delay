@@ -1,4 +1,81 @@
+import CoreGraphics
 import Foundation
+
+enum CaptureQualityPreset: String, CaseIterable, Identifiable {
+    case smooth
+    case balanced
+    case performance
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .smooth:
+            return "Smooth"
+        case .balanced:
+            return "Balanced"
+        case .performance:
+            return "Performance"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .smooth:
+            return "Prioritize steadier motion with a deeper queue and lower capture resolution."
+        case .balanced:
+            return "Default 60 fps capture with moderate resolution and buffering."
+        case .performance:
+            return "Reduce GPU and CPU load with smaller frames and a 30 fps capture cadence."
+        }
+    }
+
+    var captureFramesPerSecond: Int32 {
+        switch self {
+        case .smooth, .balanced:
+            return 60
+        case .performance:
+            return 30
+        }
+    }
+
+    var presentationFramesPerSecond: Int {
+        Int(captureFramesPerSecond)
+    }
+
+    var queueDepth: Int {
+        switch self {
+        case .smooth:
+            return 10
+        case .balanced:
+            return 8
+        case .performance:
+            return 5
+        }
+    }
+
+    var previewMaximumCaptureSize: CGSize {
+        switch self {
+        case .smooth:
+            return CGSize(width: 1600, height: 900)
+        case .balanced:
+            return CGSize(width: 1920, height: 1080)
+        case .performance:
+            return CGSize(width: 1280, height: 720)
+        }
+    }
+
+    var windowMaximumCaptureSize: CGSize {
+        switch self {
+        case .smooth:
+            return CGSize(width: 1440, height: 810)
+        case .balanced:
+            return CGSize(width: 1600, height: 900)
+        case .performance:
+            return CGSize(width: 1280, height: 720)
+        }
+    }
+}
 
 enum CaptureMode: String, CaseIterable, Identifiable {
     case displayPreview
@@ -47,6 +124,12 @@ final class SettingsStore: ObservableObject {
     @Published var captureMode: CaptureMode {
         didSet {
             userDefaults.set(captureMode.rawValue, forKey: Self.captureModeKey)
+        }
+    }
+
+    @Published var captureQualityPreset: CaptureQualityPreset {
+        didSet {
+            userDefaults.set(captureQualityPreset.rawValue, forKey: Self.captureQualityPresetKey)
         }
     }
 
@@ -103,6 +186,7 @@ final class SettingsStore: ObservableObject {
     private let userDefaults: UserDefaults
     private static let delayKey = "delayMilliseconds"
     private static let captureModeKey = "captureMode"
+    private static let captureQualityPresetKey = "captureQualityPreset"
     private static let selectedWindowIDKey = "selectedWindowID"
     private static let selectedDisplayIDKey = "selectedDisplayID"
     private static let showsDebugHUDKey = "showsDebugHUD"
@@ -116,6 +200,8 @@ final class SettingsStore: ObservableObject {
         self.delayMilliseconds = Self.clamp(storedValue)
         let storedCaptureMode = userDefaults.string(forKey: Self.captureModeKey)
         self.captureMode = CaptureMode(rawValue: storedCaptureMode ?? "") ?? .displayPreview
+        let storedCaptureQualityPreset = userDefaults.string(forKey: Self.captureQualityPresetKey)
+        self.captureQualityPreset = CaptureQualityPreset(rawValue: storedCaptureQualityPreset ?? "") ?? .balanced
         self.selectedWindowID = userDefaults.object(forKey: Self.selectedWindowIDKey) as? Int
         self.selectedDisplayID = userDefaults.object(forKey: Self.selectedDisplayIDKey) as? Int
         if userDefaults.object(forKey: Self.showsDebugHUDKey) == nil {

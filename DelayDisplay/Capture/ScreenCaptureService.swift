@@ -74,8 +74,6 @@ enum ScreenCaptureServiceError: LocalizedError {
 
 @MainActor
 final class ScreenCaptureService {
-    private static let previewMaximumCaptureSize = CGSize(width: 1920, height: 1080)
-    private static let windowMaximumCaptureSize = CGSize(width: 1600, height: 900)
     private static let opaqueBlackBackgroundColor = CGColor(gray: 0, alpha: 1)
 
     private(set) var activeBootstrap: CaptureBootstrap?
@@ -106,6 +104,7 @@ final class ScreenCaptureService {
     func prepareBootstrap(
         excludingBundleIdentifier bundleIdentifier: String?,
         captureMode: CaptureMode,
+        qualityPreset: CaptureQualityPreset,
         selectedDisplayID: Int?,
         selectedWindowID: Int?
     ) async throws -> CaptureBootstrap {
@@ -131,7 +130,7 @@ final class ScreenCaptureService {
 
             bootstrap = CaptureBootstrap(
                 displayID: display.displayID,
-                frameSize: fittedCaptureSize(for: displaySize, maximumSize: Self.previewMaximumCaptureSize),
+                frameSize: fittedCaptureSize(for: displaySize, maximumSize: qualityPreset.previewMaximumCaptureSize),
                 display: display,
                 window: nil
             )
@@ -151,7 +150,7 @@ final class ScreenCaptureService {
                 throw ScreenCaptureServiceError.noEligibleWindowsFound
             }
 
-            let targetSize = fittedCaptureSize(for: window.frame.size, maximumSize: Self.windowMaximumCaptureSize)
+            let targetSize = fittedCaptureSize(for: window.frame.size, maximumSize: qualityPreset.windowMaximumCaptureSize)
 
             bootstrap = CaptureBootstrap(
                 displayID: CGMainDisplayID(),
@@ -168,9 +167,9 @@ final class ScreenCaptureService {
     func startCapture(
         bootstrap: CaptureBootstrap,
         delayMilliseconds: Int,
+        qualityPreset: CaptureQualityPreset,
         excludingBundleIdentifier bundleIdentifier: String?,
-        overlayWindowID: CGWindowID?,
-        onDelayedFrame: @escaping DelayedFrameConsumer
+        overlayWindowID: CGWindowID?
     ) async throws {
         stopCapture()
 
@@ -178,8 +177,8 @@ final class ScreenCaptureService {
         streamConfiguration.width = Int(bootstrap.frameSize.width)
         streamConfiguration.height = Int(bootstrap.frameSize.height)
         streamConfiguration.pixelFormat = kCVPixelFormatType_32BGRA
-        streamConfiguration.minimumFrameInterval = CMTime(value: 1, timescale: 60)
-        streamConfiguration.queueDepth = 6
+        streamConfiguration.minimumFrameInterval = CMTime(value: 1, timescale: qualityPreset.captureFramesPerSecond)
+        streamConfiguration.queueDepth = qualityPreset.queueDepth
         streamConfiguration.showsCursor = true
         streamConfiguration.capturesAudio = false
 
@@ -200,7 +199,7 @@ final class ScreenCaptureService {
 
         let capturePipeline = CapturePipeline(
             delayMilliseconds: delayMilliseconds,
-            frameConsumer: onDelayedFrame
+            qualityPreset: qualityPreset
         )
         let outputHandler = ScreenStreamOutputHandler(capturePipeline: capturePipeline)
         let filter = try await makeFilter(
@@ -217,6 +216,14 @@ final class ScreenCaptureService {
         self.capturePipeline = capturePipeline
         self.outputHandler = outputHandler
         self.stream = stream
+    }
+
+    func presentation(atHostTime hostTime: TimeInterval) async -> CapturePresentation? {
+        guard let capturePipeline else {
+            return nil
+        }
+
+        return await capturePipeline.presentation(atHostTime: hostTime)
     }
 
     func updateDelay(_ delayMilliseconds: Int) {
@@ -362,6 +369,7 @@ final class ScreenCaptureService {
 
 private final class ScreenStreamOutputHandler: NSObject, SCStreamOutput {
     private let capturePipeline: CapturePipeline
+    private let framePreparer = CaptureFramePreparer()
 
     init(capturePipeline: CapturePipeline) {
         self.capturePipeline = capturePipeline
@@ -372,8 +380,10 @@ private final class ScreenStreamOutputHandler: NSObject, SCStreamOutput {
             return
         }
 
+        let preparedFrameResult = framePreparer.prepare(sampleBuffer: sampleBuffer)
+
         Task {
-            await capturePipeline.process(sampleBuffer: sampleBuffer)
+            await capturePipeline.ingest(preparedFrameResult)
         }
     }
 }

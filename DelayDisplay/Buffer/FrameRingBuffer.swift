@@ -3,8 +3,14 @@ import Foundation
 
 actor FrameRingBuffer {
     struct Entry {
-        let captureTime: TimeInterval
+        let sourceTime: TimeInterval
         let image: CGImage
+    }
+
+    enum LookupResult {
+        case warmingUp
+        case ready(Entry)
+        case underrun
     }
 
     private let maximumEntryCount: Int
@@ -15,8 +21,16 @@ actor FrameRingBuffer {
         self.maximumEntryCount = max(frameBudget, 1)
     }
 
-    func append(_ image: CGImage, captureTime: TimeInterval) -> Int {
-        entries.append(Entry(captureTime: captureTime, image: image))
+    func append(_ image: CGImage, sourceTime: TimeInterval) -> Int {
+        let storedSourceTime: TimeInterval
+        if let latestSourceTime = entries.last?.sourceTime,
+           sourceTime <= latestSourceTime {
+            storedSourceTime = latestSourceTime + 0.000_001
+        } else {
+            storedSourceTime = sourceTime
+        }
+
+        entries.append(Entry(sourceTime: storedSourceTime, image: image))
 
         if entries.count > maximumEntryCount {
             entries.removeFirst(entries.count - maximumEntryCount)
@@ -25,26 +39,38 @@ actor FrameRingBuffer {
         return entries.count
     }
 
-    func entry(forDelayMilliseconds delayMilliseconds: Int, latestCaptureTime: TimeInterval) -> Entry? {
-        guard !entries.isEmpty else {
-            return nil
+    func entry(forTargetSourceTime targetSourceTime: TimeInterval) -> LookupResult {
+        guard let oldestEntry = entries.first,
+              let latestEntry = entries.last else {
+            return .warmingUp
         }
 
-        let targetTime = latestCaptureTime - (Double(delayMilliseconds) / 1_000.0)
-        guard let oldestCaptureTime = entries.first?.captureTime,
-              targetTime >= oldestCaptureTime else {
-            return nil
+        if targetSourceTime < oldestEntry.sourceTime {
+            return .warmingUp
         }
 
-        return entries.last { $0.captureTime <= targetTime }
+        if targetSourceTime > latestEntry.sourceTime {
+            return .underrun
+        }
+
+        guard let entry = entries.last(where: { $0.sourceTime <= targetSourceTime }) else {
+            return .warmingUp
+        }
+
+        return .ready(entry)
     }
 
-    func bufferedDurationMilliseconds(latestCaptureTime: TimeInterval) -> Int {
-        guard let oldestCaptureTime = entries.first?.captureTime else {
+    func bufferedDurationMilliseconds() -> Int {
+        guard let oldestSourceTime = entries.first?.sourceTime,
+              let latestSourceTime = entries.last?.sourceTime else {
             return 0
         }
 
-        return max(Int(((latestCaptureTime - oldestCaptureTime) * 1_000).rounded()), 0)
+        return max(Int(((latestSourceTime - oldestSourceTime) * 1_000).rounded()), 0)
+    }
+
+    func bufferedFrameCount() -> Int {
+        entries.count
     }
 
     func clear() {
