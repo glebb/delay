@@ -170,7 +170,8 @@ final class ScreenCaptureService {
         delayMilliseconds: Int,
         qualityPreset: CaptureQualityPreset,
         excludingBundleIdentifier bundleIdentifier: String?,
-        overlayWindowID: CGWindowID?
+        overlayWindowID: CGWindowID?,
+        onPlaybackUpdate: @escaping @Sendable (CapturePresentation) -> Void
     ) async throws {
         stopCapture()
 
@@ -202,7 +203,10 @@ final class ScreenCaptureService {
             delayMilliseconds: delayMilliseconds,
             qualityPreset: qualityPreset
         )
-        let outputHandler = ScreenStreamOutputHandler(capturePipeline: capturePipeline)
+        let outputHandler = ScreenStreamOutputHandler(
+            capturePipeline: capturePipeline,
+            onPlaybackUpdate: onPlaybackUpdate
+        )
         let filter = try await makeFilter(
             bootstrap: bootstrap,
             excludingBundleIdentifier: bundleIdentifier,
@@ -218,10 +222,6 @@ final class ScreenCaptureService {
         self.capturePipeline = capturePipeline
         self.outputHandler = outputHandler
         self.stream = stream
-    }
-
-    nonisolated func presentation(atHostTime hostTime: TimeInterval) async -> CapturePresentation? {
-        await presentationSource.presentation(atHostTime: hostTime)
     }
 
     func updateDelay(_ delayMilliseconds: Int) {
@@ -385,9 +385,14 @@ private actor CapturePresentationSource {
 private final class ScreenStreamOutputHandler: NSObject, SCStreamOutput {
     private let capturePipeline: CapturePipeline
     private let framePreparer = CaptureFramePreparer()
+    private let onPlaybackUpdate: @Sendable (CapturePresentation) -> Void
 
-    init(capturePipeline: CapturePipeline) {
+    init(
+        capturePipeline: CapturePipeline,
+        onPlaybackUpdate: @escaping @Sendable (CapturePresentation) -> Void
+    ) {
         self.capturePipeline = capturePipeline
+        self.onPlaybackUpdate = onPlaybackUpdate
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of outputType: SCStreamOutputType) {
@@ -398,7 +403,11 @@ private final class ScreenStreamOutputHandler: NSObject, SCStreamOutput {
         let preparedFrameResult = framePreparer.prepare(sampleBuffer: sampleBuffer)
 
         Task {
-            await capturePipeline.ingest(preparedFrameResult)
+            guard let playbackUpdate = await capturePipeline.ingest(preparedFrameResult) else {
+                return
+            }
+
+            onPlaybackUpdate(playbackUpdate)
         }
     }
 }

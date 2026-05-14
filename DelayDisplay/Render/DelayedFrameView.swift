@@ -84,10 +84,11 @@ private struct DelayedFrameSurface: NSViewRepresentable {
         context.coordinator.update(model: model)
     }
 
+    @MainActor
     final class Coordinator {
         private var model: OverlayContentModel
         private weak var surfaceView: DelayedFrameSurfaceView?
-        private var frameSubscription: AnyCancellable?
+        private var playbackSubscription: AnyCancellable?
 
         init(model: OverlayContentModel) {
             self.model = model
@@ -108,8 +109,8 @@ private struct DelayedFrameSurface: NSViewRepresentable {
         }
 
         private func subscribe(to model: OverlayContentModel) {
-            frameSubscription = model.framePublisher.sink { [weak surfaceView] frame in
-                surfaceView?.update(frame: frame)
+            playbackSubscription = model.playbackPublisher.sink { [weak surfaceView] command in
+                surfaceView?.handle(command: command)
             }
         }
     }
@@ -117,7 +118,10 @@ private struct DelayedFrameSurface: NSViewRepresentable {
 
 private final class DelayedFrameSurfaceView: NSView {
     private let displayLayer = AVSampleBufferDisplayLayer()
-    private var displayedFrame: DelayedFramePayload?
+    private let hostClock = CMClockGetHostTimeClock()
+    private var timebase: CMTimebase?
+    private var currentDelayMilliseconds = 0
+    private var currentContentsRect = CGRect(x: 0, y: 0, width: 1, height: 1)
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -128,7 +132,7 @@ private final class DelayedFrameSurfaceView: NSView {
 
         displayLayer.videoGravity = .resizeAspect
         displayLayer.backgroundColor = NSColor.black.cgColor
-        displayLayer.controlTimebase = nil
+        configureTimebaseIfNeeded()
         layer?.addSublayer(displayLayer)
     }
 
@@ -142,26 +146,81 @@ private final class DelayedFrameSurfaceView: NSView {
         displayLayer.frame = bounds
     }
 
-    func update(frame: DelayedFramePayload?) {
-        guard displayedFrame !== frame else {
-            return
-        }
-
-        displayedFrame = frame
-
-        guard let frame else {
+    func handle(command: OverlayContentModel.PlaybackCommand) {
+        switch command {
+        case .clear:
             displayLayer.flushAndRemoveImage()
+        case .configure(let delayMilliseconds, let shouldFlush):
+            currentDelayMilliseconds = delayMilliseconds
+            configureTimebaseIfNeeded()
+            updateTimebaseDelay(delayMilliseconds: delayMilliseconds)
+
+            if shouldFlush {
+                displayLayer.flushAndRemoveImage()
+            }
+        case .enqueue(let frame):
+            configureTimebaseIfNeeded()
+
+            if displayLayer.status == .failed {
+                displayLayer.flushAndRemoveImage()
+                updateTimebaseDelay(delayMilliseconds: currentDelayMilliseconds)
+            }
+
+            if currentContentsRect != frame.contentsRect {
+                currentContentsRect = frame.contentsRect
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                displayLayer.contentsRect = frame.contentsRect
+                CATransaction.commit()
+            }
+
+            displayLayer.enqueue(frame.sampleBuffer)
+        }
+    }
+
+    private func configureTimebaseIfNeeded() {
+        guard timebase == nil else {
             return
         }
 
-        if displayLayer.status == .failed {
-            displayLayer.flush()
+        var createdTimebase: CMTimebase?
+        let status = CMTimebaseCreateWithSourceClock(
+            allocator: kCFAllocatorDefault,
+            sourceClock: hostClock,
+            timebaseOut: &createdTimebase
+        )
+
+        guard status == noErr,
+              let createdTimebase else {
+            return
         }
 
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        displayLayer.contentsRect = frame.contentsRect
-        CATransaction.commit()
-        displayLayer.enqueue(frame.sampleBuffer)
+        timebase = createdTimebase
+        displayLayer.controlTimebase = createdTimebase
+        updateTimebaseDelay(delayMilliseconds: currentDelayMilliseconds)
+    }
+
+    private func updateTimebaseDelay(delayMilliseconds: Int) {
+        guard let timebase else {
+            return
+        }
+
+        let hostTime = CMClockGetTime(hostClock)
+        let delayedTime = CMTimeSubtract(
+            hostTime,
+            CMTime(milliseconds: delayMilliseconds)
+        )
+        _ = CMTimebaseSetRateAndAnchorTime(
+            timebase,
+            rate: 1,
+            anchorTime: delayedTime,
+            immediateSourceTime: hostTime
+        )
+    }
+}
+
+private extension CMTime {
+    init(milliseconds: Int) {
+        self = CMTime(value: CMTimeValue(milliseconds), timescale: 1_000)
     }
 }

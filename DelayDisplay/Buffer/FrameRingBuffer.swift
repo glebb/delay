@@ -86,6 +86,51 @@ actor FrameRingBuffer {
         return .ready(previousEntry)
     }
 
+    func timingBounds() -> (oldest: TimeInterval, latest: TimeInterval)? {
+        guard let oldestEntry = firstEntry,
+              let latestEntry else {
+            return nil
+        }
+
+        return (oldest: oldestEntry.sourceTime, latest: latestEntry.sourceTime)
+    }
+
+    func entriesForEnqueue(
+        after lastQueuedSourceTime: TimeInterval?,
+        targetSourceTime: TimeInterval,
+        through upperBoundSourceTime: TimeInterval
+    ) -> [Entry] {
+        guard entryCount > 0,
+              let latestEntry else {
+            return []
+        }
+
+        let clampedUpperBound = min(upperBoundSourceTime, latestEntry.sourceTime)
+        guard clampedUpperBound.isFinite else {
+            return []
+        }
+
+        let startIndex: Int
+        if let lastQueuedSourceTime {
+            startIndex = firstIndex(after: lastQueuedSourceTime)
+        } else if let floorIndex = floorIndex(for: targetSourceTime) {
+            startIndex = floorIndex
+        } else {
+            startIndex = firstIndex(atOrAfter: targetSourceTime)
+        }
+
+        guard startIndex < entryCount else {
+            return []
+        }
+
+        let endIndex = lastIndex(atOrBefore: clampedUpperBound)
+        guard endIndex >= startIndex else {
+            return []
+        }
+
+        return (startIndex...endIndex).compactMap(entry(atLogicalIndex:))
+    }
+
     func bufferedDurationMilliseconds() -> Int {
         guard let oldestSourceTime = firstEntry?.sourceTime,
               let latestSourceTime = latestEntry?.sourceTime else {
@@ -111,6 +156,74 @@ actor FrameRingBuffer {
 
     private var latestEntry: Entry? {
         entry(atLogicalIndex: entryCount - 1)
+    }
+
+    private func floorIndex(for targetSourceTime: TimeInterval) -> Int? {
+        var lowerBound = 0
+        var upperBound = entryCount - 1
+        var matchingIndex: Int?
+
+        while lowerBound <= upperBound {
+            let middleIndex = (lowerBound + upperBound) / 2
+            guard let candidateEntry = entry(atLogicalIndex: middleIndex) else {
+                break
+            }
+
+            if candidateEntry.sourceTime <= targetSourceTime {
+                matchingIndex = middleIndex
+                lowerBound = middleIndex + 1
+            } else {
+                upperBound = middleIndex - 1
+            }
+        }
+
+        return matchingIndex
+    }
+
+    private func firstIndex(atOrAfter targetSourceTime: TimeInterval) -> Int {
+        var lowerBound = 0
+        var upperBound = entryCount
+
+        while lowerBound < upperBound {
+            let middleIndex = (lowerBound + upperBound) / 2
+            guard let candidateEntry = entry(atLogicalIndex: middleIndex) else {
+                upperBound = middleIndex
+                continue
+            }
+
+            if candidateEntry.sourceTime < targetSourceTime {
+                lowerBound = middleIndex + 1
+            } else {
+                upperBound = middleIndex
+            }
+        }
+
+        return lowerBound
+    }
+
+    private func firstIndex(after targetSourceTime: TimeInterval) -> Int {
+        var lowerBound = 0
+        var upperBound = entryCount
+
+        while lowerBound < upperBound {
+            let middleIndex = (lowerBound + upperBound) / 2
+            guard let candidateEntry = entry(atLogicalIndex: middleIndex) else {
+                upperBound = middleIndex
+                continue
+            }
+
+            if candidateEntry.sourceTime <= targetSourceTime {
+                lowerBound = middleIndex + 1
+            } else {
+                upperBound = middleIndex
+            }
+        }
+
+        return lowerBound
+    }
+
+    private func lastIndex(atOrBefore targetSourceTime: TimeInterval) -> Int {
+        (floorIndex(for: targetSourceTime) ?? -1)
     }
 
     private func entry(atLogicalIndex logicalIndex: Int) -> Entry? {

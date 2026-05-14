@@ -51,7 +51,13 @@ final class OverlayWindowController: NSWindowController, NSWindowDelegate {
     ) {
         contentModel.update(delayMilliseconds: delayMilliseconds, statusLine: statusLine)
         updatePresentation(showsDebugHUD: showsDebugHUD, keepsOverlayOnTop: keepsOverlayOnTop)
-        contentModel.updateFrame(nil, isWarmingUp: true, debugInfo: initialDebugInfo)
+        contentModel.updatePlayback(
+            framesToEnqueue: [],
+            delayMilliseconds: delayMilliseconds,
+            shouldResetRenderer: true,
+            isWarmingUp: true,
+            debugInfo: initialDebugInfo
+        )
         currentPresentationMode = presentationMode
 
         let rootView = DelayedFrameView(model: contentModel)
@@ -133,8 +139,20 @@ final class OverlayWindowController: NSWindowController, NSWindowDelegate {
         applyPresentationBehavior(to: window)
     }
 
-    func display(frame: DelayedFramePayload?, isWarmingUp: Bool, debugInfo: CaptureDebugInfo) {
-        contentModel.updateFrame(frame, isWarmingUp: isWarmingUp, debugInfo: debugInfo)
+    func display(
+        framesToEnqueue: [DelayedFramePayload],
+        delayMilliseconds: Int,
+        shouldResetRenderer: Bool,
+        isWarmingUp: Bool,
+        debugInfo: CaptureDebugInfo
+    ) {
+        contentModel.updatePlayback(
+            framesToEnqueue: framesToEnqueue,
+            delayMilliseconds: delayMilliseconds,
+            shouldResetRenderer: shouldResetRenderer,
+            isWarmingUp: isWarmingUp,
+            debugInfo: debugInfo
+        )
     }
 
     func hideOverlay() {

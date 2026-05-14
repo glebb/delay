@@ -5,7 +5,13 @@ import Foundation
 
 @MainActor
 final class OverlayContentModel: ObservableObject {
-    let framePublisher = PassthroughSubject<DelayedFramePayload?, Never>()
+    enum PlaybackCommand {
+        case clear
+        case configure(delayMilliseconds: Int, shouldFlush: Bool)
+        case enqueue(DelayedFramePayload)
+    }
+
+    let playbackPublisher = PassthroughSubject<PlaybackCommand, Never>()
 
     @Published private(set) var hasImage = false
     @Published private(set) var delayMilliseconds = 0
@@ -27,6 +33,7 @@ final class OverlayContentModel: ObservableObject {
         latestImageDescription: "n/a"
     )
     private var lastDebugInfoUpdateTime: TimeInterval = 0
+    private var lastConfiguredDelayMilliseconds: Int?
 
     func update(delayMilliseconds: Int, statusLine: String) {
         if self.delayMilliseconds != delayMilliseconds {
@@ -44,18 +51,29 @@ final class OverlayContentModel: ObservableObject {
         }
     }
 
-    func updateFrame(_ frame: DelayedFramePayload?, isWarmingUp: Bool, debugInfo: CaptureDebugInfo) {
-        let shouldShowPlaceholder = frame == nil && !hasImage
+    func updatePlayback(
+        framesToEnqueue: [DelayedFramePayload],
+        delayMilliseconds: Int,
+        shouldResetRenderer: Bool,
+        isWarmingUp: Bool,
+        debugInfo: CaptureDebugInfo
+    ) {
+        let shouldShowPlaceholder = framesToEnqueue.isEmpty && !hasImage
         if self.isWarmingUp != shouldShowPlaceholder && (shouldShowPlaceholder || !isWarmingUp) {
             self.isWarmingUp = shouldShowPlaceholder
         }
 
-        if let frame {
+        if shouldResetRenderer || lastConfiguredDelayMilliseconds != delayMilliseconds {
+            playbackPublisher.send(.configure(delayMilliseconds: delayMilliseconds, shouldFlush: true))
+            lastConfiguredDelayMilliseconds = delayMilliseconds
+        }
+
+        for frame in framesToEnqueue {
             if !hasImage {
                 hasImage = true
             }
 
-            framePublisher.send(frame)
+            playbackPublisher.send(.enqueue(frame))
         }
 
         let now = CACurrentMediaTime()
@@ -66,11 +84,12 @@ final class OverlayContentModel: ObservableObject {
     }
 
     func reset() {
-        framePublisher.send(nil)
+        playbackPublisher.send(.clear)
         hasImage = false
         isWarmingUp = false
         statusLine = "Idle"
         lastDebugInfoUpdateTime = 0
+        lastConfiguredDelayMilliseconds = nil
         debugInfo = CaptureDebugInfo(
             receivedFrames: 0,
             acceptedFrames: 0,

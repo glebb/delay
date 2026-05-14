@@ -22,7 +22,6 @@ final class DelayCoordinator: ObservableObject {
     private let permissionsService: PermissionsService
     private let screenCaptureService: ScreenCaptureService
     private let overlayWindowController: OverlayWindowController
-    private let presentationTicker = PresentationTicker()
     private lazy var overlayHotkeyMonitor = OverlayHotkeyMonitor(
         onKeyActivity: { [weak self] in
             self?.handleObservedKeyPress()
@@ -57,7 +56,6 @@ final class DelayCoordinator: ObservableObject {
 
     deinit {
         liveModeResetTask?.cancel()
-        presentationTicker.stop()
     }
 
     func start() async {
@@ -123,21 +121,26 @@ final class DelayCoordinator: ObservableObject {
                 delayMilliseconds: effectiveDelayMilliseconds,
                 qualityPreset: settingsStore.captureQualityPreset,
                 excludingBundleIdentifier: Bundle.main.bundleIdentifier,
-                overlayWindowID: overlayWindowController.overlayWindowID
+                overlayWindowID: overlayWindowController.overlayWindowID,
+                onPlaybackUpdate: { [weak self] presentation in
+                    Task { @MainActor [weak self] in
+                        guard let self,
+                              self.isRunning else {
+                            return
+                        }
+
+                        self.presentCurrentFrame(presentation)
+                    }
+                }
             )
 
             isRunning = true
             lastPresentedDelayMilliseconds = effectiveDelayMilliseconds
             lastPresentedStatusLine = initialStatusLine
-            startPresentationTicker(
-                displayID: screen.displayID,
-                framesPerSecond: settingsStore.captureQualityPreset.presentationFramesPerSecond
-            )
             overlayHotkeyMonitor.start()
             statusLine = initialStatusLine
         } catch {
             resetTemporaryLiveModeState()
-            presentationTicker.stop()
             overlayWindowController.hideOverlay()
             NSApp.setActivationPolicy(.accessory)
             statusLine = "Unable to prepare capture"
@@ -149,7 +152,6 @@ final class DelayCoordinator: ObservableObject {
         guard isRunning else { return }
 
         resetTemporaryLiveModeState()
-        presentationTicker.stop()
         overlayHotkeyMonitor.stop()
         overlayWindowController.hideOverlay()
         screenCaptureService.stopCapture()
@@ -370,25 +372,6 @@ final class DelayCoordinator: ObservableObject {
         statusLine = runtimeStatus
     }
 
-    private func startPresentationTicker(displayID: CGDirectDisplayID?, framesPerSecond: Int) {
-        let screenCaptureService = self.screenCaptureService
-
-        presentationTicker.start(displayID: displayID, fallbackFramesPerSecond: framesPerSecond) { [weak self, screenCaptureService] hostTime in
-            guard let self,
-                  let presentation = await screenCaptureService.presentation(atHostTime: hostTime) else {
-                return
-            }
-
-            await MainActor.run {
-                guard self.isRunning else {
-                    return
-                }
-
-                self.presentCurrentFrame(presentation)
-            }
-        }
-    }
-
     private func presentCurrentFrame(_ presentation: CapturePresentation) {
         let runtimeStatus = currentStatusLine(isWarmingUp: presentation.isWarmingUp)
         let effectiveDelay = effectiveDelayMilliseconds
@@ -407,7 +390,9 @@ final class DelayCoordinator: ObservableObject {
         }
 
         overlayWindowController.display(
-            frame: presentation.frame,
+            framesToEnqueue: presentation.framesToEnqueue,
+            delayMilliseconds: effectiveDelay,
+            shouldResetRenderer: presentation.shouldResetRenderer,
             isWarmingUp: presentation.isWarmingUp,
             debugInfo: presentation.debugInfo
         )
@@ -472,151 +457,3 @@ enum DelayCoordinatorError: LocalizedError {
     }
 }
 
-private final class PresentationTicker {
-    private let callbackQueue = DispatchQueue(label: "DelayDisplay.PresentationTicker")
-    private let clock = ContinuousClock()
-    private var task: Task<Void, Never>?
-    private var displayLink: CVDisplayLink?
-    private var pendingHostTime: TimeInterval?
-    private var isTickInFlight = false
-    private var tick: (@Sendable (TimeInterval) async -> Void)?
-
-    func start(
-        displayID: CGDirectDisplayID?,
-        fallbackFramesPerSecond: Int = 60,
-        tick: @escaping @Sendable (TimeInterval) async -> Void
-    ) {
-        stop()
-        self.tick = tick
-
-        if let displayID,
-           startDisplayLink(displayID: displayID) {
-            return
-        }
-
-        startFallbackTicker(framesPerSecond: fallbackFramesPerSecond)
-    }
-
-    private func startFallbackTicker(framesPerSecond: Int) {
-        guard let tick else {
-            return
-        }
-
-        let normalizedFramesPerSecond = max(framesPerSecond, 1)
-        let intervalNanoseconds = max(Int64(1_000_000_000 / normalizedFramesPerSecond), 1)
-        let interval = Duration.nanoseconds(intervalNanoseconds)
-        let tolerance = Duration.nanoseconds(max(intervalNanoseconds / 10, 500_000))
-
-        task = Task {
-            var nextTick = clock.now
-
-            while !Task.isCancelled {
-                await tick(CACurrentMediaTime())
-                nextTick += interval
-
-                do {
-                    try await clock.sleep(until: nextTick, tolerance: tolerance)
-                } catch {
-                    break
-                }
-            }
-        }
-    }
-
-    func stop() {
-        if let displayLink {
-            CVDisplayLinkStop(displayLink)
-        }
-
-        displayLink = nil
-        task?.cancel()
-        task = nil
-        callbackQueue.sync {
-            pendingHostTime = nil
-            isTickInFlight = false
-        }
-        tick = nil
-    }
-
-    deinit {
-        stop()
-    }
-
-    private func startDisplayLink(displayID: CGDirectDisplayID) -> Bool {
-        var displayLink: CVDisplayLink?
-        guard CVDisplayLinkCreateWithCGDisplay(displayID, &displayLink) == kCVReturnSuccess,
-              let displayLink else {
-            return false
-        }
-
-        guard CVDisplayLinkSetOutputHandler(displayLink, { [weak self] _, _, outputTime, _, _ in
-            self?.handleDisplayLinkTick(hostTime: outputTime.pointee.hostTime)
-            return kCVReturnSuccess
-        }) == kCVReturnSuccess else {
-            return false
-        }
-
-        guard CVDisplayLinkStart(displayLink) == kCVReturnSuccess else {
-            return false
-        }
-
-        self.displayLink = displayLink
-        return true
-    }
-
-    private func handleDisplayLinkTick(hostTime: UInt64) {
-        let hostTimeSeconds = seconds(forHostTime: hostTime)
-
-        callbackQueue.async { [weak self] in
-            guard let self else {
-                return
-            }
-
-            if self.isTickInFlight {
-                self.pendingHostTime = hostTimeSeconds
-                return
-            }
-
-            self.scheduleTick(hostTime: hostTimeSeconds)
-        }
-    }
-
-    private func scheduleTick(hostTime: TimeInterval) {
-        guard let tick else {
-            return
-        }
-
-        isTickInFlight = true
-
-        Task { [weak self] in
-            await tick(hostTime)
-            self?.finishTick()
-        }
-    }
-
-    private func finishTick() {
-        callbackQueue.async { [weak self] in
-            guard let self else {
-                return
-            }
-
-            if let pendingHostTime {
-                self.pendingHostTime = nil
-                self.scheduleTick(hostTime: pendingHostTime)
-                return
-            }
-
-            self.isTickInFlight = false
-        }
-    }
-
-    private func seconds(forHostTime hostTime: UInt64) -> TimeInterval {
-        let frequency = CVGetHostClockFrequency()
-        guard hostTime > 0,
-              frequency > 0 else {
-            return CACurrentMediaTime()
-        }
-
-        return Double(hostTime) / frequency
-    }
-}
