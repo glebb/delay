@@ -33,14 +33,6 @@ final class OverlayWindowController: NSWindowController, NSWindowDelegate {
     )
     var onUserClose: (() -> Void)?
 
-    var overlayWindowID: CGWindowID? {
-        guard let window else {
-            return nil
-        }
-
-        return CGWindowID(window.windowNumber)
-    }
-
     func showOverlay(
         on screen: NSScreen,
         delayMilliseconds: Int,

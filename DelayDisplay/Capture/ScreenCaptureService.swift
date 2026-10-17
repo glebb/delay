@@ -170,7 +170,6 @@ final class ScreenCaptureService {
         delayMilliseconds: Int,
         qualityPreset: CaptureQualityPreset,
         excludingBundleIdentifier bundleIdentifier: String?,
-        overlayWindowID: CGWindowID?,
         onPlaybackUpdate: @escaping @Sendable (CapturePresentation) -> Void
     ) async throws {
         stopCapture()
@@ -209,8 +208,7 @@ final class ScreenCaptureService {
         )
         let filter = try await makeFilter(
             bootstrap: bootstrap,
-            excludingBundleIdentifier: bundleIdentifier,
-            overlayWindowID: overlayWindowID
+            excludingBundleIdentifier: bundleIdentifier
         )
         let stream = SCStream(filter: filter, configuration: streamConfiguration, delegate: nil)
 
@@ -254,8 +252,7 @@ final class ScreenCaptureService {
 
     private func makeFilter(
         bootstrap: CaptureBootstrap,
-        excludingBundleIdentifier bundleIdentifier: String?,
-        overlayWindowID: CGWindowID?
+        excludingBundleIdentifier bundleIdentifier: String?
     ) async throws -> SCContentFilter {
         if let window = bootstrap.window {
             return SCContentFilter(desktopIndependentWindow: window)
@@ -265,19 +262,9 @@ final class ScreenCaptureService {
             throw ScreenCaptureServiceError.noActiveBootstrap
         }
 
+        // Exclude by application rather than including a fixed window list, so windows,
+        // menus, and system UI that appear after capture starts are still captured.
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-
-        if let overlayWindowID,
-           let overlayWindow = content.windows.first(where: { $0.windowID == overlayWindowID }) {
-            let belowContent = try await SCShareableContent.excludingDesktopWindows(
-                false,
-                onScreenWindowsOnlyBelow: overlayWindow
-            )
-
-            if !belowContent.windows.isEmpty {
-                return SCContentFilter(display: display, including: belowContent.windows)
-            }
-        }
 
         let excludedApplications: [SCRunningApplication]
         if let bundleIdentifier {

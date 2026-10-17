@@ -121,7 +121,6 @@ final class DelayCoordinator: ObservableObject {
                 delayMilliseconds: effectiveDelayMilliseconds,
                 qualityPreset: settingsStore.captureQualityPreset,
                 excludingBundleIdentifier: Bundle.main.bundleIdentifier,
-                overlayWindowID: overlayWindowController.overlayWindowID,
                 onPlaybackUpdate: { [weak self] presentation in
                     Task { @MainActor [weak self] in
                         guard let self,
