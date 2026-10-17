@@ -320,8 +320,13 @@ final class DelayCoordinator: ObservableObject {
             return
         }
 
-        isTemporaryLiveModeActive = true
         scheduleTemporaryLiveModeReset()
+
+        guard !isTemporaryLiveModeActive else {
+            return
+        }
+
+        isTemporaryLiveModeActive = true
         applyEffectiveDelay(isWarmingUp: false)
     }
 

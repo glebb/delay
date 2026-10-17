@@ -382,6 +382,12 @@ actor CapturePipeline {
 
     func updateDelay(_ delayMilliseconds: Int, retentionDelayMilliseconds: Int) {
         self.retentionDelayMilliseconds = retentionDelayMilliseconds
+
+        // Resetting flushes the display layer, so only do it when the delay actually changes.
+        guard delayMilliseconds != self.delayMilliseconds else {
+            return
+        }
+
         self.delayMilliseconds = delayMilliseconds
         lastQueuedSourceTime = nil
         isUnderrunning = false
