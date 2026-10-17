@@ -7,8 +7,26 @@ enum PresentationMode {
 }
 
 private final class OverlayWindow: NSWindow {
+    private static let escapeKeyCode: UInt16 = 53
+
+    var onEscapeKey: (() -> Void)?
+
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
+
+    // Intercepted before the hosting view sees the event, so Escape stops output regardless
+    // of which view is first responder.
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .keyDown,
+           event.keyCode == Self.escapeKeyCode,
+           event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty,
+           let onEscapeKey {
+            onEscapeKey()
+            return
+        }
+
+        super.sendEvent(event)
+    }
 }
 
 @MainActor
@@ -54,7 +72,7 @@ final class OverlayWindowController: NSWindowController, NSWindowDelegate {
 
         let rootView = DelayedFrameView(model: contentModel)
         let hostingController = NSHostingController(rootView: rootView)
-        let window: NSWindow
+        let window: OverlayWindow
 
         switch presentationMode {
         case .previewWindow:
@@ -95,6 +113,9 @@ final class OverlayWindowController: NSWindowController, NSWindowDelegate {
         window.backgroundColor = .black
         window.isOpaque = true
         window.delegate = self
+        window.onEscapeKey = { [weak self] in
+            self?.onUserClose?()
+        }
         window.isReleasedWhenClosed = false
         applyPresentationBehavior(to: window)
 
