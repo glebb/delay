@@ -84,6 +84,7 @@ final class ScreenCaptureService {
     private(set) var activeBootstrap: CaptureBootstrap?
     private var stream: SCStream?
     private var outputHandler: ScreenStreamOutputHandler?
+    private var streamDelegate: ScreenStreamDelegate?
     private var capturePipeline: CapturePipeline?
     private var playbackTask: Task<Void, Never>?
     private var presentationTickTask: Task<Void, Never>?
@@ -178,7 +179,8 @@ final class ScreenCaptureService {
         retentionDelayMilliseconds: Int,
         qualityPreset: CaptureQualityPreset,
         excludingBundleIdentifier bundleIdentifier: String?,
-        onPlaybackUpdate: @escaping @MainActor (CapturePresentation) -> Void
+        onPlaybackUpdate: @escaping @MainActor (CapturePresentation) -> Void,
+        onStreamStopped: @escaping @MainActor (Error) -> Void
     ) async throws {
         stopCapture()
 
@@ -220,7 +222,23 @@ final class ScreenCaptureService {
             bootstrap: bootstrap,
             excludingBundleIdentifier: bundleIdentifier
         )
-        let stream = SCStream(filter: filter, configuration: streamConfiguration, delegate: nil)
+        let streamDelegate = ScreenStreamDelegate()
+        let stream = SCStream(filter: filter, configuration: streamConfiguration, delegate: streamDelegate)
+
+        // ScreenCaptureKit reports the stop on its own queue, possibly after this stream was
+        // replaced, so only the stream that is still active tears capture down.
+        streamDelegate.onStop = { [weak self, weak stream] error in
+            Task { @MainActor in
+                guard let self,
+                      let stream,
+                      self.stream === stream else {
+                    return
+                }
+
+                self.stopCapture()
+                onStreamStopped(error)
+            }
+        }
 
         try stream.addStreamOutput(outputHandler, type: .screen, sampleHandlerQueue: sampleHandlerQueue)
         try await stream.startCapture()
@@ -260,6 +278,7 @@ final class ScreenCaptureService {
         activeBootstrap = bootstrap
         self.capturePipeline = capturePipeline
         self.outputHandler = outputHandler
+        self.streamDelegate = streamDelegate
         self.playbackEvents = eventContinuation
         self.stream = stream
     }
@@ -286,6 +305,7 @@ final class ScreenCaptureService {
         playbackEvents = nil
         self.stream = nil
         self.outputHandler = nil
+        self.streamDelegate = nil
         self.capturePipeline = nil
         activeBootstrap = nil
 
@@ -419,6 +439,14 @@ private final class ScreenStreamOutputHandler: NSObject, SCStreamOutput {
         }
 
         playbackEvents.yield(.frame(framePreparer.prepare(sampleBuffer: sampleBuffer)))
+    }
+}
+
+private final class ScreenStreamDelegate: NSObject, SCStreamDelegate {
+    var onStop: (@Sendable (Error) -> Void)?
+
+    func stream(_ stream: SCStream, didStopWithError error: Error) {
+        onStop?(error)
     }
 }
 

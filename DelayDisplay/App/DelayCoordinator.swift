@@ -2,6 +2,7 @@ import AppKit
 import CoreVideo
 import Foundation
 import QuartzCore
+import ScreenCaptureKit
 
 @MainActor
 final class DelayCoordinator: ObservableObject {
@@ -129,6 +130,9 @@ final class DelayCoordinator: ObservableObject {
                     }
 
                     self.presentCurrentFrame(presentation)
+                },
+                onStreamStopped: { [weak self] error in
+                    self?.handleCaptureStreamStopped(error)
                 }
             )
 
@@ -306,6 +310,38 @@ final class DelayCoordinator: ObservableObject {
         } catch {
             availableDisplays = []
             displaySelectionMessage = error.localizedDescription
+        }
+    }
+
+    private func handleCaptureStreamStopped(_ error: Error) {
+        guard isRunning else { return }
+
+        stop()
+        statusLine = "Capture stopped"
+        lastErrorMessage = captureStoppedMessage(for: error)
+    }
+
+    private func captureStoppedMessage(for error: Error) -> String {
+        let nsError = error as NSError
+        guard nsError.domain == SCStreamErrorDomain,
+              let code = SCStreamError.Code(rawValue: nsError.code) else {
+            return "Capture stopped unexpectedly: \(error.localizedDescription)"
+        }
+
+        switch code {
+        case .userStopped:
+            return "Screen sharing was stopped from the system menu. Start DelayDisplay again to resume."
+        case .noCaptureSource:
+            switch settingsStore.captureMode {
+            case .displayPreview:
+                return "The captured monitor is no longer available. Reconnect it or choose another monitor, then start again."
+            case .frontmostWindowFullscreen:
+                return "The captured window was closed or is no longer available. Refresh the window list and start again."
+            }
+        case .userDeclined:
+            return "Screen Recording access was revoked. Grant it in System Settings > Privacy & Security, then quit and relaunch DelayDisplay."
+        default:
+            return "Capture stopped unexpectedly: \(error.localizedDescription)"
         }
     }
 
