@@ -89,6 +89,7 @@ final class ScreenCaptureService {
     private var playbackTask: Task<Void, Never>?
     private var presentationTickTask: Task<Void, Never>?
     private var playbackEvents: AsyncStream<PlaybackEvent>.Continuation?
+    private var pendingTeardownTask: Task<Void, Never>?
     private let sampleHandlerQueue = DispatchQueue(label: "DelayDisplay.ScreenCapture.Video")
 
     func availableDisplays() async throws -> [CapturedDisplayOption] {
@@ -183,6 +184,10 @@ final class ScreenCaptureService {
         onStreamStopped: @escaping @MainActor (Error) -> Void
     ) async throws {
         stopCapture()
+
+        // A stream that is still stopping can hold the capture source, so the new stream
+        // only starts once every earlier teardown has finished.
+        await pendingTeardownTask?.value
 
         let streamConfiguration = SCStreamConfiguration()
         streamConfiguration.width = Int(bootstrap.frameSize.width)
@@ -309,7 +314,9 @@ final class ScreenCaptureService {
         self.capturePipeline = nil
         activeBootstrap = nil
 
-        Task {
+        let previousTeardownTask = pendingTeardownTask
+        pendingTeardownTask = Task {
+            await previousTeardownTask?.value
             try? await stream?.stopCapture()
             if let capturePipeline {
                 await capturePipeline.reset()
