@@ -75,11 +75,15 @@ enum ScreenCaptureServiceError: LocalizedError {
 @MainActor
 final class ScreenCaptureService {
     private static let opaqueBlackBackgroundColor = CGColor(gray: 0, alpha: 1)
+    // Frames are enqueued up to the pipeline's queue horizon ahead of display, so this
+    // only needs to be fast enough to stay inside that horizon.
+    private static let presentationTickNanoseconds: UInt64 = 1_000_000_000 / 30
 
     private(set) var activeBootstrap: CaptureBootstrap?
     private var stream: SCStream?
     private var outputHandler: ScreenStreamOutputHandler?
     private var capturePipeline: CapturePipeline?
+    private var presentationTask: Task<Void, Never>?
     private let presentationSource = CapturePresentationSource()
     private let sampleHandlerQueue = DispatchQueue(label: "DelayDisplay.ScreenCapture.Video")
 
@@ -218,6 +222,22 @@ final class ScreenCaptureService {
         try await stream.startCapture()
         await presentationSource.setCapturePipeline(capturePipeline)
 
+        // Capture only delivers frames when content changes, so drive delayed presentation
+        // from the clock too; otherwise a change followed by a static screen would not be
+        // shown until the next change arrived.
+        presentationTask = Task { [presentationSource] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: Self.presentationTickNanoseconds)
+
+                guard !Task.isCancelled,
+                      let presentation = await presentationSource.presentation(atHostTime: CACurrentMediaTime()) else {
+                    continue
+                }
+
+                onPlaybackUpdate(presentation)
+            }
+        }
+
         activeBootstrap = bootstrap
         self.capturePipeline = capturePipeline
         self.outputHandler = outputHandler
@@ -238,6 +258,8 @@ final class ScreenCaptureService {
         let stream = self.stream
         let capturePipeline = self.capturePipeline
 
+        presentationTask?.cancel()
+        presentationTask = nil
         self.stream = nil
         self.outputHandler = nil
         self.capturePipeline = nil
