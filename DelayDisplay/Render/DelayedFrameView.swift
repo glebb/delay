@@ -43,7 +43,7 @@ struct DelayedFrameView: View {
                         .font(.system(.caption, design: .monospaced))
                     Text("recv \(model.debugInfo.receivedFrames)  accept \(model.debugInfo.acceptedFrames)  emit \(model.debugInfo.emittedFrames)")
                         .font(.system(.caption, design: .monospaced))
-                    Text("skip \(model.debugInfo.skippedFrames)  underrun \(model.debugInfo.underrunCount)  img \(model.debugInfo.latestImageDescription)")
+                    Text("skip \(model.debugInfo.skippedFrames)  late \(model.debugInfo.lateFrameCount)  img \(model.debugInfo.latestImageDescription)")
                         .font(.system(.caption, design: .monospaced))
                     Text("capture \(model.debugInfo.captureFramesPerSecond) fps  display \(model.debugInfo.presentationFramesPerSecond) fps  buffer \(model.debugInfo.bufferedFrames)")
                         .font(.system(.caption, design: .monospaced))

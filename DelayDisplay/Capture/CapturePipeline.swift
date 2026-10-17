@@ -10,7 +10,7 @@ struct CaptureDebugInfo: Sendable {
     let acceptedFrames: Int
     let emittedFrames: Int
     let skippedFrames: Int
-    let underrunCount: Int
+    let lateFrameCount: Int
     let bufferedFrames: Int
     let bufferedDurationMilliseconds: Int
     let effectiveDelayMilliseconds: Int?
@@ -348,6 +348,7 @@ final class CaptureFramePreparer {
 actor CapturePipeline {
     private static let queueHorizonSeconds: TimeInterval = 0.25
     private static let retentionMarginSeconds: TimeInterval = 0.5
+    private static let lateFrameToleranceSeconds: TimeInterval = 0.05
 
     private let frameBuffer: FrameRingBuffer
     private let qualityPreset: CaptureQualityPreset
@@ -357,12 +358,11 @@ actor CapturePipeline {
     private var acceptedFrames = 0
     private var emittedFrames = 0
     private var skippedFrames = 0
-    private var underrunCount = 0
+    private var lateFrameCount = 0
     private var latestSourceTime: TimeInterval?
     private var latestHostTime: TimeInterval?
     private var latestImageDescription = "n/a"
     private var lastQueuedSourceTime: TimeInterval?
-    private var isUnderrunning = false
     private var recentAcceptedHostTimes: [TimeInterval] = []
     private var recentQueuedHostTimes: [TimeInterval] = []
     private var rendererGeneration = 0
@@ -390,7 +390,6 @@ actor CapturePipeline {
 
         self.delayMilliseconds = delayMilliseconds
         lastQueuedSourceTime = nil
-        isUnderrunning = false
         rendererGeneration += 1
     }
 
@@ -400,12 +399,11 @@ actor CapturePipeline {
         acceptedFrames = 0
         emittedFrames = 0
         skippedFrames = 0
-        underrunCount = 0
+        lateFrameCount = 0
         latestSourceTime = nil
         latestHostTime = nil
         latestImageDescription = "n/a"
         lastQueuedSourceTime = nil
-        isUnderrunning = false
         recentAcceptedHostTimes.removeAll(keepingCapacity: false)
         recentQueuedHostTimes.removeAll(keepingCapacity: false)
         rendererGeneration += 1
@@ -429,72 +427,7 @@ actor CapturePipeline {
         _ = await frameBuffer.append(preparedFrame.frame, sourceTime: sourceTime)
         await frameBuffer.trim(before: sourceTime - retentionSeconds)
 
-        let bufferedFrames = await frameBuffer.bufferedFrameCount()
-        let bufferedDurationMilliseconds = await frameBuffer.bufferedDurationMilliseconds()
-        let shouldResetRenderer = rendererGeneration != presentedRendererGeneration
-
-        if shouldResetRenderer {
-            presentedRendererGeneration = rendererGeneration
-            lastQueuedSourceTime = nil
-        }
-
-        let targetSourceTime: TimeInterval
-        if delayMilliseconds <= 0 {
-            targetSourceTime = sourceTime
-        } else {
-            targetSourceTime = sourceTime - (Double(delayMilliseconds) / 1_000.0)
-        }
-
-        let queueUpperBound = targetSourceTime + Self.queueHorizonSeconds
-        let timingBounds = await frameBuffer.timingBounds()
-        let framesToEnqueue: [DelayedFramePayload]
-        let isWarmingUp: Bool
-
-        if let timingBounds {
-            if targetSourceTime < timingBounds.oldest {
-                isWarmingUp = true
-                isUnderrunning = false
-                framesToEnqueue = []
-            } else {
-                isWarmingUp = false
-                let entriesToEnqueue = await frameBuffer.entriesForEnqueue(
-                    after: lastQueuedSourceTime,
-                    targetSourceTime: targetSourceTime,
-                    through: queueUpperBound
-                )
-                framesToEnqueue = entriesToEnqueue.map(\.frame)
-
-                if let lastQueuedEntry = entriesToEnqueue.last {
-                    lastQueuedSourceTime = lastQueuedEntry.sourceTime
-                }
-
-                if !entriesToEnqueue.isEmpty {
-                    emittedFrames += entriesToEnqueue.count
-                    for _ in entriesToEnqueue {
-                        recordEvent(preparedFrame.hostTime, in: &recentQueuedHostTimes)
-                    }
-                }
-
-                isUnderrunning = false
-            }
-        } else {
-            isWarmingUp = true
-            isUnderrunning = false
-            framesToEnqueue = []
-        }
-
-        let effectiveDelayMilliseconds = isWarmingUp ? nil : delayMilliseconds
-        return CapturePresentation(
-            framesToEnqueue: framesToEnqueue,
-            shouldResetRenderer: shouldResetRenderer,
-            isWarmingUp: isWarmingUp,
-            debugInfo: makeDebugInfo(
-                bufferedFrames: bufferedFrames,
-                bufferedDurationMilliseconds: bufferedDurationMilliseconds,
-                effectiveDelayMilliseconds: effectiveDelayMilliseconds,
-                hostTime: preparedFrame.hostTime
-            )
-        )
+        return await presentation(atHostTime: CACurrentMediaTime())
     }
 
     func presentation(atHostTime hostTime: TimeInterval) async -> CapturePresentation {
@@ -522,7 +455,8 @@ actor CapturePipeline {
             )
         }
 
-        let unclampedTargetSourceTime = estimatedSourceNow - (Double(delayMilliseconds) / 1_000.0)
+        let delaySeconds = Double(delayMilliseconds) / 1_000.0
+        let unclampedTargetSourceTime = estimatedSourceNow - delaySeconds
         let targetSourceTime: TimeInterval
         if delayMilliseconds <= 0,
            let latestSourceTime {
@@ -536,44 +470,37 @@ actor CapturePipeline {
         let framesToEnqueue: [DelayedFramePayload]
         var isWarmingUp = false
 
-        if let timingBounds {
-            if targetSourceTime < timingBounds.oldest {
-                isWarmingUp = true
-                isUnderrunning = false
-                framesToEnqueue = []
-            } else {
-                let entriesToEnqueue = await frameBuffer.entriesForEnqueue(
-                    after: lastQueuedSourceTime,
-                    targetSourceTime: targetSourceTime,
-                    through: queueUpperBound
-                )
-                framesToEnqueue = entriesToEnqueue.map(\.frame)
+        if let timingBounds,
+           targetSourceTime >= timingBounds.oldest {
+            let isResumingQueue = lastQueuedSourceTime == nil
+            let entriesToEnqueue = await frameBuffer.entriesForEnqueue(
+                after: lastQueuedSourceTime,
+                targetSourceTime: targetSourceTime,
+                through: queueUpperBound
+            )
+            framesToEnqueue = entriesToEnqueue.map(\.frame)
 
-                if let lastQueuedEntry = entriesToEnqueue.last {
-                    lastQueuedSourceTime = lastQueuedEntry.sourceTime
-                }
+            if let lastQueuedEntry = entriesToEnqueue.last {
+                lastQueuedSourceTime = lastQueuedEntry.sourceTime
+            }
 
-                if !entriesToEnqueue.isEmpty {
-                    emittedFrames += entriesToEnqueue.count
-                    let delaySeconds = Double(delayMilliseconds) / 1_000.0
-                    for entry in entriesToEnqueue {
-                        recordEvent(entry.sourceTime + delaySeconds, in: &recentQueuedHostTimes)
-                    }
-                }
+            emittedFrames += entriesToEnqueue.count
+            for (index, entry) in entriesToEnqueue.enumerated() {
+                let scheduledHostTime = entry.sourceTime + delaySeconds
+                recordEvent(scheduledHostTime, in: &recentQueuedHostTimes)
 
-                if targetSourceTime > timingBounds.latest {
-                    if !isUnderrunning && lastQueuedSourceTime != nil {
-                        underrunCount += 1
-                    }
-
-                    isUnderrunning = true
-                } else {
-                    isUnderrunning = false
+                // A frame is late when it reaches the renderer after its display time. When
+                // resuming, the first entry is the frame already due on screen, so it is
+                // expected to be in the past; at 0 ms every frame trails by capture latency.
+                let isResumedFrame = isResumingQueue && index == 0
+                if delayMilliseconds > 0,
+                   !isResumedFrame,
+                   hostTime - scheduledHostTime > Self.lateFrameToleranceSeconds {
+                    lateFrameCount += 1
                 }
             }
         } else {
             isWarmingUp = true
-            isUnderrunning = false
             framesToEnqueue = []
         }
 
@@ -619,7 +546,7 @@ actor CapturePipeline {
             acceptedFrames: acceptedFrames,
             emittedFrames: emittedFrames,
             skippedFrames: skippedFrames,
-            underrunCount: underrunCount,
+            lateFrameCount: lateFrameCount,
             bufferedFrames: bufferedFrames,
             bufferedDurationMilliseconds: bufferedDurationMilliseconds,
             effectiveDelayMilliseconds: effectiveDelayMilliseconds,

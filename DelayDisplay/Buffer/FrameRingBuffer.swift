@@ -7,12 +7,6 @@ actor FrameRingBuffer {
         let frame: DelayedFramePayload
     }
 
-    enum LookupResult {
-        case warmingUp
-        case ready(Entry)
-        case underrun
-    }
-
     private let maximumEntryCount: Int
     private var entries: [Entry?]
     private var headIndex = 0
@@ -56,46 +50,6 @@ actor FrameRingBuffer {
             headIndex = physicalIndex(forLogicalIndex: 1)
             entryCount -= 1
         }
-    }
-
-    func entry(forTargetSourceTime targetSourceTime: TimeInterval) -> LookupResult {
-        guard let oldestEntry = firstEntry,
-              let latestEntry else {
-            return .warmingUp
-        }
-
-        if targetSourceTime < oldestEntry.sourceTime {
-            return .warmingUp
-        }
-
-        if targetSourceTime > latestEntry.sourceTime {
-            return .underrun
-        }
-
-        var lowerBound = 0
-        var upperBound = entryCount - 1
-        var matchingIndex: Int?
-
-        while lowerBound <= upperBound {
-            let middleIndex = (lowerBound + upperBound) / 2
-            guard let candidateEntry = entry(atLogicalIndex: middleIndex) else {
-                break
-            }
-
-            if candidateEntry.sourceTime <= targetSourceTime {
-                matchingIndex = middleIndex
-                lowerBound = middleIndex + 1
-            } else {
-                upperBound = middleIndex - 1
-            }
-        }
-
-        guard let previousIndex = matchingIndex,
-              let previousEntry = entry(atLogicalIndex: previousIndex) else {
-            return .warmingUp
-        }
-
-        return .ready(previousEntry)
     }
 
     func timingBounds() -> (oldest: TimeInterval, latest: TimeInterval)? {

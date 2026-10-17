@@ -22,7 +22,7 @@ final class OverlayWindowController: NSWindowController, NSWindowDelegate {
         acceptedFrames: 0,
         emittedFrames: 0,
         skippedFrames: 0,
-        underrunCount: 0,
+        lateFrameCount: 0,
         bufferedFrames: 0,
         bufferedDurationMilliseconds: 0,
         effectiveDelayMilliseconds: nil,
