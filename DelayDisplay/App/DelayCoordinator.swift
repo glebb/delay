@@ -39,6 +39,7 @@ final class DelayCoordinator: ObservableObject {
     private var isTemporaryLiveModeActive = false
     private var lastPresentedDelayMilliseconds: Int?
     private var lastPresentedStatusLine: String?
+    private var startGeneration = 0
 
     init(
         settingsStore: SettingsStore,
@@ -61,6 +62,9 @@ final class DelayCoordinator: ObservableObject {
 
     func start() async {
         guard !isRunning, !isBusy else { return }
+
+        startGeneration += 1
+        let generation = startGeneration
 
         resetTemporaryLiveModeState()
 
@@ -92,6 +96,10 @@ final class DelayCoordinator: ObservableObject {
                 selectedDisplayID: settingsStore.selectedDisplayID,
                 selectedWindowID: settingsStore.selectedWindowID
             )
+
+            guard generation == startGeneration else {
+                return
+            }
 
             guard let screen = NSScreen.screen(withDisplayID: bootstrap.displayID) ?? NSScreen.main else {
                 throw DelayCoordinatorError.noMatchingScreen
@@ -136,12 +144,21 @@ final class DelayCoordinator: ObservableObject {
                 }
             )
 
+            guard generation == startGeneration else {
+                screenCaptureService.stopCapture()
+                return
+            }
+
             isRunning = true
             lastPresentedDelayMilliseconds = effectiveDelayMilliseconds
             lastPresentedStatusLine = initialStatusLine
             overlayHotkeyMonitor.start()
             statusLine = initialStatusLine
         } catch {
+            guard generation == startGeneration else {
+                return
+            }
+
             resetTemporaryLiveModeState()
             overlayWindowController.hideOverlay()
             NSApp.setActivationPolicy(.accessory)
@@ -151,6 +168,11 @@ final class DelayCoordinator: ObservableObject {
     }
 
     func stop() {
+        if isBusy, !isRunning {
+            cancelPendingStart()
+            return
+        }
+
         guard isRunning else { return }
 
         resetTemporaryLiveModeState()
@@ -311,6 +333,16 @@ final class DelayCoordinator: ObservableObject {
             availableDisplays = []
             displaySelectionMessage = error.localizedDescription
         }
+    }
+
+    private func cancelPendingStart() {
+        startGeneration += 1
+        resetTemporaryLiveModeState()
+        overlayWindowController.hideOverlay()
+        screenCaptureService.stopCapture()
+        NSApp.setActivationPolicy(.accessory)
+        statusLine = "Idle"
+        lastErrorMessage = nil
     }
 
     private func handleCaptureStreamStopped(_ error: Error) {
