@@ -39,12 +39,12 @@ final class DelayedFramePayload: @unchecked Sendable {
     }
 }
 
-enum PreparedFrameResult {
+enum PreparedFrameResult: Sendable {
     case accepted(PreparedFrame)
     case skipped
 }
 
-struct PreparedFrame {
+struct PreparedFrame: Sendable {
     let frame: DelayedFramePayload
     let sourceTime: TimeInterval
     let hostTime: TimeInterval

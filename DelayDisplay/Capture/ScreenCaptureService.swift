@@ -78,13 +78,16 @@ final class ScreenCaptureService {
     // Frames are enqueued up to the pipeline's queue horizon ahead of display, so this
     // only needs to be fast enough to stay inside that horizon.
     private static let presentationTickNanoseconds: UInt64 = 1_000_000_000 / 30
+    // Bounds the backlog if the main actor falls behind; the oldest events are dropped first.
+    private static let maximumPendingPlaybackEvents = 32
 
     private(set) var activeBootstrap: CaptureBootstrap?
     private var stream: SCStream?
     private var outputHandler: ScreenStreamOutputHandler?
     private var capturePipeline: CapturePipeline?
-    private var presentationTask: Task<Void, Never>?
-    private let presentationSource = CapturePresentationSource()
+    private var playbackTask: Task<Void, Never>?
+    private var presentationTickTask: Task<Void, Never>?
+    private var playbackEvents: AsyncStream<PlaybackEvent>.Continuation?
     private let sampleHandlerQueue = DispatchQueue(label: "DelayDisplay.ScreenCapture.Video")
 
     func availableDisplays() async throws -> [CapturedDisplayOption] {
@@ -175,7 +178,7 @@ final class ScreenCaptureService {
         retentionDelayMilliseconds: Int,
         qualityPreset: CaptureQualityPreset,
         excludingBundleIdentifier bundleIdentifier: String?,
-        onPlaybackUpdate: @escaping @Sendable (CapturePresentation) -> Void
+        onPlaybackUpdate: @escaping @MainActor (CapturePresentation) -> Void
     ) async throws {
         stopCapture()
 
@@ -208,10 +211,11 @@ final class ScreenCaptureService {
             retentionDelayMilliseconds: retentionDelayMilliseconds,
             qualityPreset: qualityPreset
         )
-        let outputHandler = ScreenStreamOutputHandler(
-            capturePipeline: capturePipeline,
-            onPlaybackUpdate: onPlaybackUpdate
+        let (events, eventContinuation) = AsyncStream.makeStream(
+            of: PlaybackEvent.self,
+            bufferingPolicy: .bufferingNewest(Self.maximumPendingPlaybackEvents)
         )
+        let outputHandler = ScreenStreamOutputHandler(playbackEvents: eventContinuation)
         let filter = try await makeFilter(
             bootstrap: bootstrap,
             excludingBundleIdentifier: bundleIdentifier
@@ -220,17 +224,22 @@ final class ScreenCaptureService {
 
         try stream.addStreamOutput(outputHandler, type: .screen, sampleHandlerQueue: sampleHandlerQueue)
         try await stream.startCapture()
-        await presentationSource.setCapturePipeline(capturePipeline)
 
-        // Capture only delivers frames when content changes, so drive delayed presentation
-        // from the clock too; otherwise a change followed by a static screen would not be
-        // shown until the next change arrived.
-        presentationTask = Task { [presentationSource] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: Self.presentationTickNanoseconds)
+        // Captured frames and clock ticks share one stream with a single consumer, so the
+        // pipeline sees frames in capture order and the renderer receives resets and
+        // enqueues in the order the pipeline produced them.
+        playbackTask = Task {
+            for await event in events {
+                let presentation: CapturePresentation?
+                switch event {
+                case .frame(let preparedFrameResult):
+                    presentation = await capturePipeline.ingest(preparedFrameResult)
+                case .tick:
+                    presentation = await capturePipeline.presentation(atHostTime: CACurrentMediaTime())
+                }
 
                 guard !Task.isCancelled,
-                      let presentation = await presentationSource.presentation(atHostTime: CACurrentMediaTime()) else {
+                      let presentation else {
                     continue
                 }
 
@@ -238,9 +247,20 @@ final class ScreenCaptureService {
             }
         }
 
+        // Capture only delivers frames when content changes, so drive delayed presentation
+        // from the clock too; otherwise a change followed by a static screen would not be
+        // shown until the next change arrived.
+        presentationTickTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: Self.presentationTickNanoseconds)
+                eventContinuation.yield(.tick)
+            }
+        }
+
         activeBootstrap = bootstrap
         self.capturePipeline = capturePipeline
         self.outputHandler = outputHandler
+        self.playbackEvents = eventContinuation
         self.stream = stream
     }
 
@@ -258,15 +278,18 @@ final class ScreenCaptureService {
         let stream = self.stream
         let capturePipeline = self.capturePipeline
 
-        presentationTask?.cancel()
-        presentationTask = nil
+        presentationTickTask?.cancel()
+        presentationTickTask = nil
+        playbackTask?.cancel()
+        playbackTask = nil
+        playbackEvents?.finish()
+        playbackEvents = nil
         self.stream = nil
         self.outputHandler = nil
         self.capturePipeline = nil
         activeBootstrap = nil
 
         Task {
-            await presentationSource.setCapturePipeline(nil)
             try? await stream?.stopCapture()
             if let capturePipeline {
                 await capturePipeline.reset()
@@ -377,33 +400,17 @@ final class ScreenCaptureService {
     }
 }
 
-private actor CapturePresentationSource {
-    private var capturePipeline: CapturePipeline?
-
-    func setCapturePipeline(_ capturePipeline: CapturePipeline?) {
-        self.capturePipeline = capturePipeline
-    }
-
-    func presentation(atHostTime hostTime: TimeInterval) async -> CapturePresentation? {
-        guard let capturePipeline else {
-            return nil
-        }
-
-        return await capturePipeline.presentation(atHostTime: hostTime)
-    }
+private enum PlaybackEvent: Sendable {
+    case frame(PreparedFrameResult)
+    case tick
 }
 
 private final class ScreenStreamOutputHandler: NSObject, SCStreamOutput {
-    private let capturePipeline: CapturePipeline
     private let framePreparer = CaptureFramePreparer()
-    private let onPlaybackUpdate: @Sendable (CapturePresentation) -> Void
+    private let playbackEvents: AsyncStream<PlaybackEvent>.Continuation
 
-    init(
-        capturePipeline: CapturePipeline,
-        onPlaybackUpdate: @escaping @Sendable (CapturePresentation) -> Void
-    ) {
-        self.capturePipeline = capturePipeline
-        self.onPlaybackUpdate = onPlaybackUpdate
+    init(playbackEvents: AsyncStream<PlaybackEvent>.Continuation) {
+        self.playbackEvents = playbackEvents
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of outputType: SCStreamOutputType) {
@@ -411,15 +418,7 @@ private final class ScreenStreamOutputHandler: NSObject, SCStreamOutput {
             return
         }
 
-        let preparedFrameResult = framePreparer.prepare(sampleBuffer: sampleBuffer)
-
-        Task {
-            guard let playbackUpdate = await capturePipeline.ingest(preparedFrameResult) else {
-                return
-            }
-
-            onPlaybackUpdate(playbackUpdate)
-        }
+        playbackEvents.yield(.frame(framePreparer.prepare(sampleBuffer: sampleBuffer)))
     }
 }
 

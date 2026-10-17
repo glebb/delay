@@ -123,14 +123,12 @@ final class DelayCoordinator: ObservableObject {
                 qualityPreset: settingsStore.captureQualityPreset,
                 excludingBundleIdentifier: Bundle.main.bundleIdentifier,
                 onPlaybackUpdate: { [weak self] presentation in
-                    Task { @MainActor [weak self] in
-                        guard let self,
-                              self.isRunning else {
-                            return
-                        }
-
-                        self.presentCurrentFrame(presentation)
+                    guard let self,
+                          self.isRunning else {
+                        return
                     }
+
+                    self.presentCurrentFrame(presentation)
                 }
             )
 
