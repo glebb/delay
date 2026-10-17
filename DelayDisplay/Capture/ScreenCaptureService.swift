@@ -168,6 +168,7 @@ final class ScreenCaptureService {
     func startCapture(
         bootstrap: CaptureBootstrap,
         delayMilliseconds: Int,
+        retentionDelayMilliseconds: Int,
         qualityPreset: CaptureQualityPreset,
         excludingBundleIdentifier bundleIdentifier: String?,
         onPlaybackUpdate: @escaping @Sendable (CapturePresentation) -> Void
@@ -200,6 +201,7 @@ final class ScreenCaptureService {
 
         let capturePipeline = CapturePipeline(
             delayMilliseconds: delayMilliseconds,
+            retentionDelayMilliseconds: retentionDelayMilliseconds,
             qualityPreset: qualityPreset
         )
         let outputHandler = ScreenStreamOutputHandler(
@@ -222,13 +224,13 @@ final class ScreenCaptureService {
         self.stream = stream
     }
 
-    func updateDelay(_ delayMilliseconds: Int) {
+    func updateDelay(_ delayMilliseconds: Int, retentionDelayMilliseconds: Int) {
         guard let capturePipeline else {
             return
         }
 
         Task {
-            await capturePipeline.updateDelay(delayMilliseconds)
+            await capturePipeline.updateDelay(delayMilliseconds, retentionDelayMilliseconds: retentionDelayMilliseconds)
         }
     }
 

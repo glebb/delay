@@ -119,6 +119,7 @@ final class DelayCoordinator: ObservableObject {
             try await screenCaptureService.startCapture(
                 bootstrap: bootstrap,
                 delayMilliseconds: effectiveDelayMilliseconds,
+                retentionDelayMilliseconds: settingsStore.delayMilliseconds,
                 qualityPreset: settingsStore.captureQualityPreset,
                 excludingBundleIdentifier: Bundle.main.bundleIdentifier,
                 onPlaybackUpdate: { [weak self] presentation in
@@ -361,7 +362,10 @@ final class DelayCoordinator: ObservableObject {
         let runtimeStatus = currentStatusLine(isWarmingUp: isWarmingUp)
         let effectiveDelay = effectiveDelayMilliseconds
 
-        screenCaptureService.updateDelay(effectiveDelay)
+        screenCaptureService.updateDelay(
+            effectiveDelay,
+            retentionDelayMilliseconds: settingsStore.delayMilliseconds
+        )
         lastPresentedDelayMilliseconds = effectiveDelay
         lastPresentedStatusLine = runtimeStatus
         overlayWindowController.update(

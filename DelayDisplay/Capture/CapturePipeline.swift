@@ -347,10 +347,12 @@ final class CaptureFramePreparer {
 
 actor CapturePipeline {
     private static let queueHorizonSeconds: TimeInterval = 0.25
+    private static let retentionMarginSeconds: TimeInterval = 0.5
 
     private let frameBuffer: FrameRingBuffer
     private let qualityPreset: CaptureQualityPreset
     private var delayMilliseconds: Int
+    private var retentionDelayMilliseconds: Int
     private var receivedFrames = 0
     private var acceptedFrames = 0
     private var emittedFrames = 0
@@ -368,15 +370,18 @@ actor CapturePipeline {
 
     init(
         delayMilliseconds: Int,
+        retentionDelayMilliseconds: Int,
         qualityPreset: CaptureQualityPreset,
         frameBuffer: FrameRingBuffer = FrameRingBuffer()
     ) {
         self.delayMilliseconds = delayMilliseconds
+        self.retentionDelayMilliseconds = retentionDelayMilliseconds
         self.qualityPreset = qualityPreset
         self.frameBuffer = frameBuffer
     }
 
-    func updateDelay(_ delayMilliseconds: Int) {
+    func updateDelay(_ delayMilliseconds: Int, retentionDelayMilliseconds: Int) {
+        self.retentionDelayMilliseconds = retentionDelayMilliseconds
         self.delayMilliseconds = delayMilliseconds
         lastQueuedSourceTime = nil
         isUnderrunning = false
@@ -416,6 +421,7 @@ actor CapturePipeline {
         latestImageDescription = preparedFrame.frame.imageDescription
         recordEvent(preparedFrame.hostTime, in: &recentAcceptedHostTimes)
         _ = await frameBuffer.append(preparedFrame.frame, sourceTime: sourceTime)
+        await frameBuffer.trim(before: sourceTime - retentionSeconds)
 
         let bufferedFrames = await frameBuffer.bufferedFrameCount()
         let bufferedDurationMilliseconds = await frameBuffer.bufferedDurationMilliseconds()
@@ -578,6 +584,13 @@ actor CapturePipeline {
                 hostTime: hostTime
             )
         )
+    }
+
+    /// How far back frames must be kept: the larger of the active delay and the delay
+    /// we may return to (e.g. after temporary live mode), plus the enqueue horizon.
+    private var retentionSeconds: TimeInterval {
+        let retainedDelayMilliseconds = max(delayMilliseconds, retentionDelayMilliseconds)
+        return (Double(retainedDelayMilliseconds) / 1_000.0) + Self.queueHorizonSeconds + Self.retentionMarginSeconds
     }
 
     private func estimatedSourceTime(atHostTime hostTime: TimeInterval) -> TimeInterval? {

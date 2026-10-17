@@ -46,6 +46,18 @@ actor FrameRingBuffer {
         return entryCount
     }
 
+    /// Releases frames that can no longer be presented, keeping the newest frame at or
+    /// before `cutoffSourceTime` because it is still on screen at that moment.
+    func trim(before cutoffSourceTime: TimeInterval) {
+        while entryCount > 1,
+              let nextEntry = entry(atLogicalIndex: 1),
+              nextEntry.sourceTime <= cutoffSourceTime {
+            entries[headIndex] = nil
+            headIndex = physicalIndex(forLogicalIndex: 1)
+            entryCount -= 1
+        }
+    }
+
     func entry(forTargetSourceTime targetSourceTime: TimeInterval) -> LookupResult {
         guard let oldestEntry = firstEntry,
               let latestEntry else {
