@@ -23,9 +23,10 @@ DelayDisplay is a native macOS app with a Dock icon and companion menu bar contr
 - Capture that stops on its own (captured window closed, monitor disconnected, permission revoked, or sharing stopped from the system menu) ends delayed output and reports the reason in the menu and settings
 - In-memory frame buffer keyed by presentation timestamps
 - Movable delayed window for monitor capture and delayed output window for selected-window capture
-- Optional always-on-top window level for both presentation modes within the active Space
-- Preview windows open on the selected monitor in that monitor's active Space; native macOS fullscreen Spaces remain isolated
+- Optional always-on-top window level for both presentation modes; an on-top window appears in every Space, including other apps' native fullscreen Spaces, and clicking it does not activate DelayDisplay, so macOS stays in that Space
+- Preview windows open on the selected monitor in that monitor's active Space; without always-on-top they stay out of other apps' native fullscreen Spaces
 - Escape in the output window and the output window's close button both stop delayed output
+- The output window's green button, or a double-click in the window, fills its monitor without a title bar in the current Space instead of entering a native fullscreen Space; with always-on-top enabled the filled window also covers the menu bar
 - Optional global key activity monitoring for temporary live mode while another app has focus, which requires Accessibility access and still may not detect some macOS system shortcuts
 
 ## Project structure
@@ -67,6 +68,5 @@ DelayDisplay is a native macOS app with a Dock icon and companion menu bar contr
 ## Next implementation slice
 
 - Validate Smooth, Balanced, and Performance behavior on real hardware in both monitor and selected-window capture modes
-- Consider a Spaces policy for preview windows, such as optional all-Spaces behavior vs. keeping the current active-Space-only model
 - Extend soak-test instrumentation with long-run frame pacing and dropped-frame trends
 - Consider whether the 30 Hz presentation ticker should move to a display-link implementation

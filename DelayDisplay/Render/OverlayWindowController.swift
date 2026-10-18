@@ -6,16 +6,36 @@ enum PresentationMode {
     case fullscreenWindow
 }
 
-private final class OverlayWindow: NSWindow {
+// A panel rather than a plain window, so that while it is kept on top it can be non-activating:
+// clicking it then leaves the other app active, and macOS does not switch away from that app's
+// fullscreen Space to bring DelayDisplay forward.
+private final class OverlayWindow: NSPanel {
     private static let escapeKeyCode: UInt16 = 53
 
     var onEscapeKey: (() -> Void)?
+    var onFillScreenChange: (() -> Void)?
+    private(set) var isFillingScreen = false
+    private var styleMaskBeforeFill: NSWindow.StyleMask = []
+    private var frameBeforeFill: CGRect?
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 
-    // Intercepted before the hosting view sees the event, so Escape stops output regardless
-    // of which view is first responder.
+    var activatesApp: Bool {
+        get { !styleMask.contains(.nonactivatingPanel) }
+        set {
+            if newValue {
+                styleMask.remove(.nonactivatingPanel)
+                styleMaskBeforeFill.remove(.nonactivatingPanel)
+            } else {
+                styleMask.insert(.nonactivatingPanel)
+                styleMaskBeforeFill.insert(.nonactivatingPanel)
+            }
+        }
+    }
+
+    // Intercepted before the hosting view sees the event, so Escape stops output and a
+    // double-click toggles fill regardless of which view is first responder.
     override func sendEvent(_ event: NSEvent) {
         if event.type == .keyDown,
            event.keyCode == Self.escapeKeyCode,
@@ -25,7 +45,44 @@ private final class OverlayWindow: NSWindow {
             return
         }
 
+        if event.type == .leftMouseDown, event.clickCount == 2 {
+            toggleFillScreen()
+            return
+        }
+
         super.sendEvent(event)
+    }
+
+    // The green button fills the window's screen in place instead of entering native
+    // fullscreen, which would move the window to its own Space and hide it whenever
+    // another app is focused.
+    override func zoom(_ sender: Any?) {
+        toggleFillScreen()
+    }
+
+    func toggleFillScreen() {
+        if isFillingScreen {
+            isFillingScreen = false
+            styleMask = styleMaskBeforeFill
+            hasShadow = true
+            if let frameBeforeFill {
+                setFrame(frameBeforeFill, display: true)
+            }
+        } else {
+            guard let screen = screen ?? NSScreen.main else {
+                return
+            }
+
+            isFillingScreen = true
+            styleMaskBeforeFill = styleMask
+            frameBeforeFill = frame
+            styleMask = styleMask.intersection(.nonactivatingPanel).union(.borderless)
+            hasShadow = false
+            setFrame(screen.frame, display: true)
+        }
+
+        onFillScreenChange?()
+        makeKeyAndOrderFront(nil)
     }
 }
 
@@ -107,7 +164,11 @@ final class OverlayWindowController: NSWindowController, NSWindowDelegate {
             window.minSize = NSSize(width: 640, height: 360)
         }
 
+        window.hidesOnDeactivate = false
+        window.activatesApp = !keepsOverlayOnTop
+
         self.window?.orderOut(nil)
+        NSApp.presentationOptions = []
 
         window.contentViewController = hostingController
         window.backgroundColor = .black
@@ -116,16 +177,29 @@ final class OverlayWindowController: NSWindowController, NSWindowDelegate {
         window.onEscapeKey = { [weak self] in
             self?.onUserClose?()
         }
+        window.onFillScreenChange = { [weak self, weak window] in
+            guard let self, let window else {
+                return
+            }
+
+            self.applyPresentationBehavior(to: window)
+        }
         window.isReleasedWhenClosed = false
         applyPresentationBehavior(to: window)
 
         self.window = window
         self.hostingController = hostingController
 
-        showWindow(nil)
         window.center()
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        if keepsOverlayOnTop {
+            // Shown without activating the app, so a fullscreen app stays in front in its own Space.
+            window.orderFrontRegardless()
+            window.makeKey()
+        } else {
+            showWindow(nil)
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 
     func update(delayMilliseconds: Int, statusLine: String) {
@@ -171,6 +245,7 @@ final class OverlayWindowController: NSWindowController, NSWindowDelegate {
     func hideOverlay() {
         contentModel.reset()
         window?.orderOut(nil)
+        NSApp.presentationOptions = []
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
@@ -206,7 +281,14 @@ final class OverlayWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func applyPresentationBehavior(to window: NSWindow) {
-        window.level = windowLevel(for: currentPresentationMode)
+        let overlayWindow = window as? OverlayWindow
+        overlayWindow?.activatesApp = !keepsOverlayOnTop
+        let isFillingScreen = overlayWindow?.isFillingScreen ?? false
+        window.level = isFillingScreen && keepsOverlayOnTop
+            ? Self.aboveMenuBarLevel
+            : windowLevel(for: currentPresentationMode)
+        // While filling the screen, the menu bar and Dock stay out of the way whenever this app is active.
+        NSApp.presentationOptions = isFillingScreen ? [.autoHideDock, .autoHideMenuBar] : []
         window.collectionBehavior = collectionBehavior(for: currentPresentationMode)
     }
 
@@ -230,6 +312,9 @@ final class OverlayWindowController: NSWindowController, NSWindowDelegate {
         return "\(baseTitle) - \(modeTitle)"
     }
 
+    // An on-top window that fills the screen also covers that screen's menu bar.
+    private static let aboveMenuBarLevel = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 1)
+
     private func windowLevel(for presentationMode: PresentationMode) -> NSWindow.Level {
         switch presentationMode {
         case .previewWindow:
@@ -240,11 +325,17 @@ final class OverlayWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func collectionBehavior(for presentationMode: PresentationMode) -> NSWindow.CollectionBehavior {
+        // An on-top window joins every Space, including other apps' native fullscreen Spaces,
+        // so it stays visible over a fullscreen app it is mirroring.
+        let spaceBehavior: NSWindow.CollectionBehavior = keepsOverlayOnTop
+            ? [.canJoinAllSpaces, .fullScreenAuxiliary]
+            : [.moveToActiveSpace]
+
         switch presentationMode {
         case .previewWindow:
-            return [.moveToActiveSpace]
+            return spaceBehavior.union(.fullScreenNone)
         case .fullscreenWindow:
-            return [.moveToActiveSpace]
+            return spaceBehavior.union(.fullScreenNone)
         }
     }
 }
