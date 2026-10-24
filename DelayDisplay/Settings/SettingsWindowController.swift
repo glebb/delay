@@ -23,30 +23,7 @@ final class SettingsWindowController: NSWindowController {
         let hostingController = self.hostingController ?? NSHostingController(rootView: rootView)
         hostingController.rootView = rootView
 
-        let targetContentSize = NSSize(width: 720, height: 500)
-        let minimumContentSize = NSSize(width: 660, height: 420)
-
-        let window = self.window ?? NSWindow(
-            contentRect: CGRect(x: 0, y: 0, width: targetContentSize.width, height: targetContentSize.height),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
-        )
-
-        window.contentViewController = hostingController
-        window.title = "DelayDisplay Settings"
-        window.titleVisibility = .visible
-        window.isReleasedWhenClosed = false
-        window.level = .floating
-        window.collectionBehavior = [.moveToActiveSpace]
-        window.contentMinSize = minimumContentSize
-        window.setFrameAutosaveName("DelayDisplaySettingsWindow")
-
-        if window.contentLayoutRect.width < minimumContentSize.width || window.contentLayoutRect.height < minimumContentSize.height {
-            window.setContentSize(targetContentSize)
-        }
-
-        window.center()
+        let window = self.window ?? makeWindow(contentViewController: hostingController)
 
         self.window = window
         self.hostingController = hostingController
@@ -54,5 +31,37 @@ final class SettingsWindowController: NSWindowController {
         showWindow(nil)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    // Configured once, so reopening the window keeps wherever the user last put it.
+    private func makeWindow(contentViewController: NSViewController) -> NSWindow {
+        let targetContentSize = NSSize(width: 720, height: 500)
+        let minimumContentSize = NSSize(width: 660, height: 420)
+        let frameAutosaveName = "DelayDisplaySettingsWindow"
+
+        let window = NSWindow(
+            contentRect: CGRect(x: 0, y: 0, width: targetContentSize.width, height: targetContentSize.height),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+
+        window.contentViewController = contentViewController
+        window.title = "DelayDisplay Settings"
+        window.titleVisibility = .visible
+        window.isReleasedWhenClosed = false
+        window.collectionBehavior = [.moveToActiveSpace]
+        window.contentMinSize = minimumContentSize
+
+        if !window.setFrameUsingName(frameAutosaveName) {
+            window.center()
+        }
+        window.setFrameAutosaveName(frameAutosaveName)
+
+        if window.contentLayoutRect.width < minimumContentSize.width || window.contentLayoutRect.height < minimumContentSize.height {
+            window.setContentSize(targetContentSize)
+        }
+
+        return window
     }
 }

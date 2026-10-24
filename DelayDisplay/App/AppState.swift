@@ -44,8 +44,11 @@ final class AppModel: ObservableObject {
         self.coordinator = coordinator
         self.settingsWindowController = settingsWindowController
 
+        // Each applied delay change flushes the renderer, so a slider drag is applied once it
+        // settles rather than at every step.
         settingsStore.$delayMilliseconds
             .dropFirst()
+            .debounce(for: .milliseconds(150), scheduler: DispatchQueue.main)
             .sink { [weak coordinator] _ in
                 coordinator?.applyUpdatedDelay()
             }

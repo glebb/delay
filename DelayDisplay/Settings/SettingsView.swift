@@ -137,7 +137,7 @@ struct SettingsView: View {
 
                 Toggle("Keep delay window above other apps", isOn: $settingsStore.keepsOverlayOnTop)
 
-                Text("Applies in the current Space only. Native macOS fullscreen Spaces stay isolated, so DelayDisplay does not pin itself above them.")
+                Text("When on, the delay window appears in every Space, including other apps' native fullscreen Spaces, and clicking it leaves the other app in front.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

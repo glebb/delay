@@ -11,7 +11,7 @@ DelayDisplay is a native macOS app with a Dock icon and companion menu bar contr
 - Refreshable window picker for choosing the app window used by selected-window capture
 - Optional debug HUD toggle for the delayed output window
 - User-facing Smooth, Balanced, and Performance capture presets for trading capture workload against playback cadence
-- Optional always-on-top toggle for keeping the delayed window above normal app windows in the current Space
+- Optional always-on-top toggle for keeping the delayed window above other app windows in every Space, including native fullscreen Spaces
 - Optional temporary live-mode toggle that forces 0 ms delay while keys are pressed in another app, then restores the configured delay after a user-configurable inactivity grace period once Accessibility access is granted
 - Output rendered through `AVSampleBufferDisplayLayer`, which receives delayed sample buffers enqueued ahead of their presentation time
 - Delayed presentation paced by a 30 Hz clock ticker, so a change followed by a static screen still appears on time; captured frames and ticks share one `AsyncStream` with a single consumer, keeping frame order intact

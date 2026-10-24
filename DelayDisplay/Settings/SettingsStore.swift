@@ -133,15 +133,9 @@ final class SettingsStore: ObservableObject {
         }
     }
 
-    @Published var selectedWindowID: Int? {
-        didSet {
-            if let selectedWindowID {
-                userDefaults.set(selectedWindowID, forKey: Self.selectedWindowIDKey)
-            } else {
-                userDefaults.removeObject(forKey: Self.selectedWindowIDKey)
-            }
-        }
-    }
+    // Not persisted: macOS reuses window IDs, so after a relaunch a saved ID can name an
+    // unrelated window and capture it silently.
+    @Published var selectedWindowID: Int?
 
     @Published var selectedDisplayID: Int? {
         didSet {
@@ -202,7 +196,9 @@ final class SettingsStore: ObservableObject {
         self.captureMode = CaptureMode(rawValue: storedCaptureMode ?? "") ?? .displayPreview
         let storedCaptureQualityPreset = userDefaults.string(forKey: Self.captureQualityPresetKey)
         self.captureQualityPreset = CaptureQualityPreset(rawValue: storedCaptureQualityPreset ?? "") ?? .balanced
-        self.selectedWindowID = userDefaults.object(forKey: Self.selectedWindowIDKey) as? Int
+        // Earlier versions saved the window ID; drop it so it cannot select a reused ID.
+        userDefaults.removeObject(forKey: Self.selectedWindowIDKey)
+        self.selectedWindowID = nil
         self.selectedDisplayID = userDefaults.object(forKey: Self.selectedDisplayIDKey) as? Int
         if userDefaults.object(forKey: Self.showsDebugHUDKey) == nil {
             self.showsDebugHUD = true

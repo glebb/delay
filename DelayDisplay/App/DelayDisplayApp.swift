@@ -5,12 +5,18 @@ struct DelayDisplayApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
+        // SwiftUI needs a scene, but settings live in SettingsWindowController so the app menu
+        // and the menu bar item open the same window.
         Settings {
-            SettingsView(
-                settingsStore: AppState.shared.model.settingsStore,
-                coordinator: AppState.shared.model.coordinator
-            )
-            .frame(minWidth: 660, idealWidth: 720, minHeight: 420, idealHeight: 500)
+            EmptyView()
+        }
+        .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") {
+                    AppState.shared.model.showSettingsWindow()
+                }
+                .keyboardShortcut(",")
+            }
         }
     }
 }

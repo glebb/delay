@@ -90,6 +90,7 @@ final class ScreenCaptureService {
     private var presentationTickTask: Task<Void, Never>?
     private var playbackEvents: AsyncStream<PlaybackEvent>.Continuation?
     private var pendingTeardownTask: Task<Void, Never>?
+    private var pendingDelayUpdateTask: Task<Void, Never>?
     private let sampleHandlerQueue = DispatchQueue(label: "DelayDisplay.ScreenCapture.Video")
 
     func availableDisplays() async throws -> [CapturedDisplayOption] {
@@ -163,7 +164,7 @@ final class ScreenCaptureService {
             let targetSize = fittedCaptureSize(for: window.frame.size, maximumSize: qualityPreset.windowMaximumCaptureSize)
 
             bootstrap = CaptureBootstrap(
-                displayID: CGMainDisplayID(),
+                displayID: displayID(containing: window, in: content.displays),
                 frameSize: targetSize,
                 display: nil,
                 window: window
@@ -216,6 +217,7 @@ final class ScreenCaptureService {
         let capturePipeline = CapturePipeline(
             delayMilliseconds: delayMilliseconds,
             retentionDelayMilliseconds: retentionDelayMilliseconds,
+            maximumDelayMilliseconds: SettingsStore.maximumDelay,
             qualityPreset: qualityPreset
         )
         let (events, eventContinuation) = AsyncStream.makeStream(
@@ -293,7 +295,11 @@ final class ScreenCaptureService {
             return
         }
 
-        Task {
+        // Unstructured tasks have no ordering guarantee, so each update waits for the previous
+        // one; otherwise a quick series of changes could finish on a stale delay.
+        let previousDelayUpdateTask = pendingDelayUpdateTask
+        pendingDelayUpdateTask = Task {
+            await previousDelayUpdateTask?.value
             await capturePipeline.updateDelay(delayMilliseconds, retentionDelayMilliseconds: retentionDelayMilliseconds)
         }
     }
@@ -312,6 +318,7 @@ final class ScreenCaptureService {
         self.outputHandler = nil
         self.streamDelegate = nil
         self.capturePipeline = nil
+        pendingDelayUpdateTask = nil
         activeBootstrap = nil
 
         let previousTeardownTask = pendingTeardownTask
@@ -400,6 +407,21 @@ final class ScreenCaptureService {
         }
 
         return true
+    }
+
+    /// The display showing the largest part of `window`, so its output opens next to it.
+    private func displayID(containing window: SCWindow, in displays: [SCDisplay]) -> CGDirectDisplayID {
+        func overlapArea(of display: SCDisplay) -> CGFloat {
+            let overlap = display.frame.intersection(window.frame)
+            return overlap.isNull ? 0 : overlap.width * overlap.height
+        }
+
+        guard let bestDisplay = displays.max(by: { overlapArea(of: $0) < overlapArea(of: $1) }),
+              overlapArea(of: bestDisplay) > 0 else {
+            return CGMainDisplayID()
+        }
+
+        return bestDisplay.displayID
     }
 
     private func fittedCaptureSize(for sourceSize: CGSize, maximumSize: CGSize) -> CGSize {

@@ -12,8 +12,10 @@ actor FrameRingBuffer {
     private var headIndex = 0
     private var entryCount = 0
 
-    init(maximumDelayMilliseconds: Int = 10_000, assumedFramesPerSecond: Int32 = 60) {
-        let frameBudget = Int((Double(maximumDelayMilliseconds) / 1_000.0) * Double(assumedFramesPerSecond))
+    /// Holds `retentionSeconds` of frames at `framesPerSecond`, plus the one frame kept at or
+    /// before the trim cutoff and one of slack for capture timing jitter.
+    init(retentionSeconds: TimeInterval, framesPerSecond: Int32) {
+        let frameBudget = Int((retentionSeconds * Double(framesPerSecond)).rounded(.up)) + 2
         self.maximumEntryCount = max(frameBudget, 1)
         self.entries = Array(repeating: nil, count: self.maximumEntryCount)
     }

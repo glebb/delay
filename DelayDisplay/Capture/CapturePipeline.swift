@@ -22,6 +22,8 @@ struct CaptureDebugInfo: Sendable {
 
 struct CapturePresentation: Sendable {
     let framesToEnqueue: [DelayedFramePayload]
+    /// The delay these frames were selected for, which the renderer's clock must match.
+    let delayMilliseconds: Int
     let shouldResetRenderer: Bool
     let isWarmingUp: Bool
     let debugInfo: CaptureDebugInfo
@@ -50,8 +52,17 @@ struct PreparedFrame: Sendable {
     let hostTime: TimeInterval
 }
 
+private struct PixelBufferPoolFormat: Equatable {
+    let width: Int
+    let height: Int
+    let pixelFormat: OSType
+}
+
 final class CaptureFramePreparer {
     private static let hostTimeTimescale: CMTimeScale = 1_000_000_000
+
+    private var pixelBufferPool: CVPixelBufferPool?
+    private var pixelBufferPoolFormat: PixelBufferPoolFormat?
 
     func prepare(sampleBuffer: CMSampleBuffer) -> PreparedFrameResult {
         guard sampleBuffer.isValid,
@@ -247,26 +258,53 @@ final class CaptureFramePreparer {
         return copiedSampleBuffer
     }
 
-    private func makeIndependentPixelBuffer(from imageBuffer: CVImageBuffer) -> CVPixelBuffer? {
-        let sourcePixelBuffer = imageBuffer as CVPixelBuffer
-        let width = CVPixelBufferGetWidth(sourcePixelBuffer)
-        let height = CVPixelBufferGetHeight(sourcePixelBuffer)
-        let pixelFormat = CVPixelBufferGetPixelFormatType(sourcePixelBuffer)
-        let attributes: [CFString: Any] = [
+    // Buffered frames are released continuously as they age out, so drawing copies from a
+    // pool reuses their memory instead of allocating a full frame for every capture.
+    private func pixelBufferPool(width: Int, height: Int, pixelFormat: OSType) -> CVPixelBufferPool? {
+        let format = PixelBufferPoolFormat(width: width, height: height, pixelFormat: pixelFormat)
+        if let pixelBufferPool, pixelBufferPoolFormat == format {
+            return pixelBufferPool
+        }
+
+        let pixelBufferAttributes: [CFString: Any] = [
+            kCVPixelBufferWidthKey: width,
+            kCVPixelBufferHeightKey: height,
+            kCVPixelBufferPixelFormatTypeKey: pixelFormat,
             kCVPixelBufferIOSurfacePropertiesKey: [:],
             kCVPixelBufferCGImageCompatibilityKey: true,
             kCVPixelBufferCGBitmapContextCompatibilityKey: true
         ]
 
-        var destinationPixelBuffer: CVPixelBuffer?
-        let status = CVPixelBufferCreate(
+        var createdPool: CVPixelBufferPool?
+        let status = CVPixelBufferPoolCreate(
             kCFAllocatorDefault,
-            width,
-            height,
-            pixelFormat,
-            attributes as CFDictionary,
-            &destinationPixelBuffer
+            nil,
+            pixelBufferAttributes as CFDictionary,
+            &createdPool
         )
+
+        guard status == kCVReturnSuccess,
+              let createdPool else {
+            return nil
+        }
+
+        pixelBufferPool = createdPool
+        pixelBufferPoolFormat = format
+        return createdPool
+    }
+
+    private func makeIndependentPixelBuffer(from imageBuffer: CVImageBuffer) -> CVPixelBuffer? {
+        let sourcePixelBuffer = imageBuffer as CVPixelBuffer
+        let width = CVPixelBufferGetWidth(sourcePixelBuffer)
+        let height = CVPixelBufferGetHeight(sourcePixelBuffer)
+        let pixelFormat = CVPixelBufferGetPixelFormatType(sourcePixelBuffer)
+
+        guard let pool = pixelBufferPool(width: width, height: height, pixelFormat: pixelFormat) else {
+            return nil
+        }
+
+        var destinationPixelBuffer: CVPixelBuffer?
+        let status = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &destinationPixelBuffer)
 
         guard status == kCVReturnSuccess,
               let destinationPixelBuffer else {
@@ -371,13 +409,18 @@ actor CapturePipeline {
     init(
         delayMilliseconds: Int,
         retentionDelayMilliseconds: Int,
-        qualityPreset: CaptureQualityPreset,
-        frameBuffer: FrameRingBuffer = FrameRingBuffer()
+        maximumDelayMilliseconds: Int,
+        qualityPreset: CaptureQualityPreset
     ) {
         self.delayMilliseconds = delayMilliseconds
         self.retentionDelayMilliseconds = retentionDelayMilliseconds
         self.qualityPreset = qualityPreset
-        self.frameBuffer = frameBuffer
+        // The buffer must hold the full retention window at the largest allowed delay; if it
+        // filled first, it would overwrite the frame that delay needs and never leave warm-up.
+        self.frameBuffer = FrameRingBuffer(
+            retentionSeconds: Self.retentionSeconds(forDelayMilliseconds: maximumDelayMilliseconds),
+            framesPerSecond: qualityPreset.captureFramesPerSecond
+        )
     }
 
     func updateDelay(_ delayMilliseconds: Int, retentionDelayMilliseconds: Int) {
@@ -435,6 +478,9 @@ actor CapturePipeline {
         let bufferedDurationMilliseconds = await frameBuffer.bufferedDurationMilliseconds()
         let estimatedSourceNow = estimatedSourceTime(atHostTime: hostTime)
         let shouldResetRenderer = rendererGeneration != presentedRendererGeneration
+        // Captured before the awaits below, where updateDelay can run, so the frames chosen
+        // and the delay reported to the renderer always agree.
+        let delayMilliseconds = self.delayMilliseconds
 
         if shouldResetRenderer {
             presentedRendererGeneration = rendererGeneration
@@ -444,6 +490,7 @@ actor CapturePipeline {
         guard let estimatedSourceNow else {
             return CapturePresentation(
                 framesToEnqueue: [],
+                delayMilliseconds: delayMilliseconds,
                 shouldResetRenderer: shouldResetRenderer,
                 isWarmingUp: true,
                 debugInfo: makeDebugInfo(
@@ -508,6 +555,7 @@ actor CapturePipeline {
 
         return CapturePresentation(
             framesToEnqueue: framesToEnqueue,
+            delayMilliseconds: delayMilliseconds,
             shouldResetRenderer: shouldResetRenderer,
             isWarmingUp: isWarmingUp,
             debugInfo: makeDebugInfo(
@@ -522,8 +570,11 @@ actor CapturePipeline {
     /// How far back frames must be kept: the larger of the active delay and the delay
     /// we may return to (e.g. after temporary live mode), plus the enqueue horizon.
     private var retentionSeconds: TimeInterval {
-        let retainedDelayMilliseconds = max(delayMilliseconds, retentionDelayMilliseconds)
-        return (Double(retainedDelayMilliseconds) / 1_000.0) + Self.queueHorizonSeconds + Self.retentionMarginSeconds
+        Self.retentionSeconds(forDelayMilliseconds: max(delayMilliseconds, retentionDelayMilliseconds))
+    }
+
+    private static func retentionSeconds(forDelayMilliseconds delayMilliseconds: Int) -> TimeInterval {
+        (Double(delayMilliseconds) / 1_000.0) + queueHorizonSeconds + retentionMarginSeconds
     }
 
     private func estimatedSourceTime(atHostTime hostTime: TimeInterval) -> TimeInterval? {

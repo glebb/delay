@@ -58,14 +58,19 @@ final class OverlayContentModel: ObservableObject {
         isWarmingUp: Bool,
         debugInfo: CaptureDebugInfo
     ) {
-        let shouldShowPlaceholder = framesToEnqueue.isEmpty && !hasImage
-        if self.isWarmingUp != shouldShowPlaceholder && (shouldShowPlaceholder || !isWarmingUp) {
-            self.isWarmingUp = shouldShowPlaceholder
-        }
-
         if shouldResetRenderer || lastConfiguredDelayMilliseconds != delayMilliseconds {
             playbackPublisher.send(.configure(delayMilliseconds: delayMilliseconds, shouldFlush: true))
             lastConfiguredDelayMilliseconds = delayMilliseconds
+            // The flush removes the displayed image, so until new frames arrive (for example
+            // while a longer delay refills the buffer) the placeholder must show instead of black.
+            if hasImage {
+                hasImage = false
+            }
+        }
+
+        let shouldShowPlaceholder = framesToEnqueue.isEmpty && !hasImage
+        if self.isWarmingUp != shouldShowPlaceholder && (shouldShowPlaceholder || !isWarmingUp) {
+            self.isWarmingUp = shouldShowPlaceholder
         }
 
         for frame in framesToEnqueue {

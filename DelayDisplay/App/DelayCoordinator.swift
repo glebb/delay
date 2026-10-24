@@ -40,6 +40,9 @@ final class DelayCoordinator: ObservableObject {
     private var lastPresentedDelayMilliseconds: Int?
     private var lastPresentedStatusLine: String?
     private var startGeneration = 0
+    // The generation of the start in progress; it differs from startGeneration once stopped.
+    private var pendingStartGeneration = 0
+    private var restartsAfterPendingStart = false
 
     init(
         settingsStore: SettingsStore,
@@ -61,10 +64,20 @@ final class DelayCoordinator: ObservableObject {
     }
 
     func start() async {
-        guard !isRunning, !isBusy else { return }
+        guard !isRunning else { return }
+
+        guard !isBusy else {
+            // A stopped start is still unwinding its capture calls; begin again once it has,
+            // rather than dropping this request.
+            if isPendingStartCancelled {
+                restartsAfterPendingStart = true
+            }
+            return
+        }
 
         startGeneration += 1
         let generation = startGeneration
+        pendingStartGeneration = generation
 
         resetTemporaryLiveModeState()
 
@@ -73,10 +86,16 @@ final class DelayCoordinator: ObservableObject {
         statusLine = permissionsService.hasScreenRecordingPermission()
             ? "Preparing capture source"
             : "Requesting screen recording permission"
-        refreshKeyboardActivityPermission(prompt: true)
+        // The system prompt is shown when live mode is turned on, not on every start.
+        refreshKeyboardActivityPermission(prompt: false)
 
         defer {
             isBusy = false
+
+            if restartsAfterPendingStart {
+                restartsAfterPendingStart = false
+                restartCapture()
+            }
         }
 
         let isGranted = permissionsService.requestScreenRecordingPermissionIfNeeded()
@@ -112,7 +131,6 @@ final class DelayCoordinator: ObservableObject {
                 : .previewWindow
 
             statusLine = "Opening delayed output window"
-            NSApp.setActivationPolicy(.regular)
 
             overlayWindowController.showOverlay(
                 on: screen,
@@ -161,7 +179,6 @@ final class DelayCoordinator: ObservableObject {
 
             resetTemporaryLiveModeState()
             overlayWindowController.hideOverlay()
-            NSApp.setActivationPolicy(.accessory)
             statusLine = "Unable to prepare capture"
             lastErrorMessage = error.localizedDescription
         }
@@ -179,7 +196,6 @@ final class DelayCoordinator: ObservableObject {
         overlayHotkeyMonitor.stop()
         overlayWindowController.hideOverlay()
         screenCaptureService.stopCapture()
-        NSApp.setActivationPolicy(.accessory)
         isRunning = false
         lastPresentedDelayMilliseconds = nil
         lastPresentedStatusLine = nil
@@ -205,15 +221,33 @@ final class DelayCoordinator: ObservableObject {
     }
 
     func applyUpdatedCaptureConfiguration() {
+        if isBusy {
+            // The start in progress already read the old settings, so restart once it is done.
+            if !isPendingStartCancelled {
+                restartsAfterPendingStart = true
+            }
+            return
+        }
+
         guard isRunning else {
             return
         }
 
-        stop()
+        restartCapture()
+    }
+
+    private func restartCapture() {
+        if isRunning {
+            stop()
+        }
 
         Task {
             await start()
         }
+    }
+
+    private var isPendingStartCancelled: Bool {
+        pendingStartGeneration != startGeneration
     }
 
     func applyUpdatedPresentationSettings() {
@@ -337,10 +371,10 @@ final class DelayCoordinator: ObservableObject {
 
     private func cancelPendingStart() {
         startGeneration += 1
+        restartsAfterPendingStart = false
         resetTemporaryLiveModeState()
         overlayWindowController.hideOverlay()
         screenCaptureService.stopCapture()
-        NSApp.setActivationPolicy(.accessory)
         statusLine = "Idle"
         lastErrorMessage = nil
     }
@@ -463,9 +497,11 @@ final class DelayCoordinator: ObservableObject {
             )
         }
 
+        // The renderer's clock follows the pipeline's delay, which can trail the requested one
+        // until the pending update reaches the pipeline.
         overlayWindowController.display(
             framesToEnqueue: presentation.framesToEnqueue,
-            delayMilliseconds: effectiveDelay,
+            delayMilliseconds: presentation.delayMilliseconds,
             shouldResetRenderer: presentation.shouldResetRenderer,
             isWarmingUp: presentation.isWarmingUp,
             debugInfo: presentation.debugInfo
